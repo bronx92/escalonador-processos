@@ -180,10 +180,6 @@ class EscalonadorCAV:
         
             self.tarefas_periodicas_template.append(template)
             print(f"-> [PERIÓDICA] Template registrado para '{tarefa.nome}' com período {tarefa.periodo}ms")
-    
-        
-        self.tarefas_periodicas_template.append(template)
-        print(f"-> [PERIÓDICA] Template registrado para '{tarefa.nome}' com período {tarefa.periodo}ms")
 
         tarefa.tempo_chegada = self.relogio_simulado
         if tarefa.deadline_relativo:
@@ -245,13 +241,13 @@ class EscalonadorCAV:
     
         # Anti-starvation para tarefas de CONFORTO
         if (self.relogio_simulado - self.ultimo_conforto_executado) > 500.0:
-            for i, tarefa in enumerate(self.filas[Criticidade.CONFORTO]):
+            for _ in range(len(self.filas[Criticidade.CONFORTO])):
+                tarefa = self.filas[Criticidade.CONFORTO].popleft()
                 if tarefa.estado != "BLOQUEADA":
                     print(f"    [ANTI-STARVATION] Forçando execução de '{tarefa.nome}'")
                     self.ultimo_conforto_executado = self.relogio_simulado
-                    tarefa_selecionada = self.filas[Criticidade.CONFORTO][i]
-                    del self.filas[Criticidade.CONFORTO][i]  # Remove a tarefa da fila
-                    return tarefa_selecionada
+                    return tarefa
+                self.filas[Criticidade.CONFORTO].append(tarefa)
     
         # 1. Verifica tarefas CRÍTICAS (EDF)
         if self.filas[Criticidade.CRITICA]:
@@ -317,35 +313,35 @@ class EscalonadorCAV:
                 self.filas[Criticidade.TEMPO_REAL],
                 self.filas[Criticidade.CONFORTO]
             ]):
-            # --- CORREÇÃO 3: MONITORAMENTO CONTÍNUO DE DEADLINES ---
-            if self.filas[Criticidade.CRITICA]:
-                # O primeiro item no heap é o que tem o deadline mais próximo
-                tarefa_mais_urgente = self.filas[Criticidade.CRITICA][0]
-                tempo_restante_deadline = tarefa_mais_urgente.deadline_absoluto - self.relogio_simulado
-                if tempo_restante_deadline < (tarefa_mais_urgente.deadline_relativo * 0.3): # Entrou nos 30% finais
-                    self.ativar_modo_seguranca(tarefa_mais_urgente)
+                # --- CORREÇÃO 3: MONITORAMENTO CONTÍNUO DE DEADLINES ---
+                if self.filas[Criticidade.CRITICA]:
+                    # O primeiro item no heap é o que tem o deadline mais próximo
+                    tarefa_mais_urgente = self.filas[Criticidade.CRITICA][0]
+                    tempo_restante_deadline = tarefa_mais_urgente.deadline_absoluto - self.relogio_simulado
+                    if tempo_restante_deadline < (tarefa_mais_urgente.deadline_relativo * 0.3): # Entrou nos 30% finais
+                        self.ativar_modo_seguranca(tarefa_mais_urgente)
 
-            self._verificar_tarefas_periodicas()
-            
-            proxima_tarefa = self.selecionar_proxima_tarefa()
+                self._verificar_tarefas_periodicas()
+                
+                proxima_tarefa = self.selecionar_proxima_tarefa()
 
-            if self.tarefa_em_execucao is None:
-                if proxima_tarefa:
-                    self.tarefa_em_execucao = proxima_tarefa
-                else:
-                    # Verifica se todas as filas estão vazias para terminar
-                    if not any(self.filas.values()):
-                        break
-                    # Se não há tarefas prontas, avança o tempo
-                    self.relogio_simulado += 1.0
-                    continue
+                if self.tarefa_em_execucao is None:
+                    if proxima_tarefa:
+                        self.tarefa_em_execucao = proxima_tarefa
+                    else:
+                        # Verifica se todas as filas estão vazias para terminar
+                        if not any(self.filas.values()):
+                            break
+                        # Se não há tarefas prontas, avança o tempo
+                        self.relogio_simulado += 1.0
+                        continue
             
-            # **Lógica de Preempção**
-            if proxima_tarefa and proxima_tarefa != self.tarefa_em_execucao:
-                 if proxima_tarefa.criticidade.value < self.tarefa_em_execucao.criticidade.value:
-                    print(f"    [PREEMPÇÃO] Tarefa '{self.tarefa_em_execucao.nome}' preemptada por '{proxima_tarefa.nome}'")
-                    self.adicionar_tarefa_na_fila(self.tarefa_em_execucao)
-                    self.tarefa_em_execucao = proxima_tarefa
+                # **Lógica de Preempção**
+                if proxima_tarefa and proxima_tarefa != self.tarefa_em_execucao:
+                     if proxima_tarefa.criticidade.value < self.tarefa_em_execucao.criticidade.value:
+                        print(f"    [PREEMPÇÃO] Tarefa '{self.tarefa_em_execucao.nome}' preemptada por '{proxima_tarefa.nome}'")
+                        self.adicionar_tarefa_na_fila(self.tarefa_em_execucao)
+                        self.tarefa_em_execucao = proxima_tarefa
 
             # Execução da tarefa
             tarefa_atual = self.tarefa_em_execucao
@@ -394,8 +390,8 @@ class EscalonadorCAV:
             self.relogio_simulado += 1.0
 
 
-        print("--- FIM DA SIMULAÇÃO ---")
-        self.gerar_relatorio()
+            print("--- FIM DA SIMULAÇÃO ---")
+            self.gerar_relatorio()
     
     def gerar_relatorio(self):        
         """Calcula e exibe as métricas de desempenho e segurança."""
