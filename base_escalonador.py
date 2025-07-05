@@ -64,12 +64,6 @@ class TarefaCAV:
     def __str__(self):
         return f"Tarefa(ID: {self.id}, Nome: {self.nome}, Crit: {self.criticidade.name})"
 
-    def __lt__(self, other):
-        # Critério de desempate para o heap: se os deadlines forem iguais, a tarefa que chegou primeiro tem prioridade.
-        if self.deadline_absoluto == other.deadline_absoluto:
-            return self.tempo_chegada < other.tempo_chegada
-        return self.deadline_absoluto < other.deadline_absoluto
-
 # ==============================================================================
 # PILAR 2: GESTÃO DE RECURSOS COM ATOMICIDADE (PIP CORRIGIDO)
 # ==============================================================================
@@ -159,6 +153,8 @@ class EscalonadorCAV:
             "modos_seguranca_ativados": 0
         }
 
+        self.tarefas_periodicas_template = []  # Linha nova a ser adicionada
+
     def validar_certificado(self, tarefa: TarefaCAV):
         """Verifica a integridade da tarefa."""
         return tarefa.certificado == tarefa._gerar_certificado()
@@ -166,8 +162,23 @@ class EscalonadorCAV:
     # --- CORREÇÃO 1: VALIDAÇÃO NO PONTO DE ENTRADA ---
     def adicionar_tarefa(self, tarefa: TarefaCAV):
         if not self.validar_certificado(tarefa):
-            print(f"ALERTA DE SEGURANÇA! Tarefa '{tarefa.nome}' com certificado inválido. REJEITADA.")
-            return
+        print(f"ALERTA DE SEGURANÇA! Tarefa '{tarefa.nome}' com certificado inválido. REJEITADA.")
+        return
+
+        # Registro de tarefas periódicas (novo)
+        if tarefa.periodo is not None:
+            # Cria template separado da instância
+            template = TarefaCAV(
+                nome=tarefa.nome,
+                duracao=tarefa.duracao,
+                criticidade=tarefa.criticidade,
+                deadline_relativo=tarefa.deadline_relativo,
+                periodo=tarefa.periodo,
+                recurso_necessario=tarefa.recurso_necessario
+            )
+        template.tempo_ultima_liberacao = self.relogio_simulado
+        self.tarefas_periodicas_template.append(template)
+        print(f"-> [PERIÓDICA] Template registrado para '{tarefa.nome}' com período {tarefa.periodo}ms")
 
         tarefa.tempo_chegada = self.relogio_simulado
         if tarefa.deadline_relativo:
@@ -184,6 +195,33 @@ class EscalonadorCAV:
         else:
             fila_alvo.append(tarefa)
 
+    def _verificar_tarefas_periodicas(self):
+        """Verifica e gera novas instâncias de tarefas periódicas."""
+        for template in self.tarefas_periodicas_template[:]:  # Usar cópia para evitar problemas
+            # Calcula o próximo tempo de liberação válido
+            proxima_liberacao = template.tempo_ultima_liberacao + template.periodo
+            
+            if self.relogio_simulado >= proxima_liberacao:
+                # Cria nova instância mantendo as propriedades originais
+                nova_instancia = TarefaCAV(
+                    nome=template.nome,
+                    duracao=template.duracao,
+                    criticidade=template.criticidade,
+                    deadline_relativo=template.deadline_relativo,
+                    periodo=template.periodo,
+                    recurso_necessario=template.recurso_necessario
+                )
+            
+            # Configura tempos da nova instância
+            nova_instancia.tempo_chegada = proxima_liberacao
+            nova_instancia.deadline_absoluto = proxima_liberacao + nova_instancia.deadline_relativo
+            
+            # Atualiza template para próxima liberação
+            template.tempo_ultima_liberacao = proxima_liberacao
+            
+            self._adicionar_tarefa_na_fila(nova_instancia)
+            print(f"-> [PERIÓDICA] Nova instância de '{template.nome}' gerada em {self.relogio_simulado:.2f}ms")
+
     def ativar_modo_seguranca(self, tarefa_gatilho: TarefaCAV):
         if self.filas[Criticidade.CONFORTO]:
             print(f"!!! MODO DE SEGURANÇA ATIVADO em {self.relogio_simulado:.2f}ms devido a {tarefa_gatilho.nome} !!!")
@@ -191,124 +229,58 @@ class EscalonadorCAV:
             self.filas[Criticidade.CONFORTO].clear()
             self.metricas["modos_seguranca_ativados"] += 1
 
-    def selecionar_proxima_tarefa(self):
-        '''
-        inicio_selecao = time.perf_counter_ns()
-
-        # --- LÓGICA ANTI-STARVATION ---
-        if (self.relogio_simulado - self.ultimo_conforto_executado) > 500.0: # A cada 500ms
-            if self.filas[Criticidade.CONFORTO]:
-                tarefa_conforto = self.filas[Criticidade.CONFORTO][0]
-                if tarefa_conforto.estado != "BLOQUEADA":
-                    print(f"    [ANTI-STARVATION] Forçando execução de '{tarefa_conforto.nome}'")
-                    self.ultimo_conforto_executado = self.relogio_simulado
-                    return self.filas[Criticidade.CONFORTO].popleft()
-
-        """
-        Implementa a lógica de seleção hierárquica e preemptiva.
-        Sempre prioriza CRITICA > TEMPO_REAL > CONFORTO.
-        """
-        # 1. Verifica fila CRÍTICA (EDF - Earliest Deadline First)
-        if self.filas[Criticidade.CRITICA]:
-            tarefa = self.filas[Criticidade.CRITICA][0] # Pega o menor deadline (topo do heap)
-            if tarefa.estado != "BLOQUEADA":
-                return heapq.heappop(self.filas[Criticidade.CRITICA])
-        
-        # Se a tarefa atual não for crítica, pode ser preemptada
-        if self.tarefa_em_execucao and self.tarefa_em_execucao.criticidade != Criticidade.CRITICA:
-            # Se chegou uma tarefa crítica, ela preempta qualquer outra coisa
-             if self.filas[Criticidade.CRITICA]:
-                return heapq.heappop(self.filas[Criticidade.CRITICA])
-        
-        # Se não há tarefa em execução, continua a busca
-        if self.tarefa_em_execucao is None:
-            # 2. Verifica fila TEMPO REAL (Round Robin)
-            if self.filas[Criticidade.TEMPO_REAL]:
-                for _ in range(len(self.filas[Criticidade.TEMPO_REAL])):
-                    tarefa = self.filas[Criticidade.TEMPO_REAL].popleft()
-                    if tarefa.estado != "BLOQUEADA":
-                         return tarefa
-                    self.filas[Criticidade.TEMPO_REAL].append(tarefa) # Devolve para o fim da fila
-
-            # 3. Verifica fila CONFORTO (FIFO)
-            if self.filas[Criticidade.CONFORTO]:
-                for _ in range(len(self.filas[Criticidade.CONFORTO])):
-                    tarefa = self.filas[Criticidade.CONFORTO].popleft()
-                    if tarefa.estado != "BLOQUEADA":
-                        return tarefa
-                    self.filas[Criticidade.CONFORTO].append(tarefa)
-        proxima_tarefa = None # Simulação simplificada
-        
-        fim_selecao = time.perf_counter_ns()
-        self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6 # ns -> ms
-        return proxima_tarefa
-
-        
-        # Ao selecionar da fila crítica:
-        if self.filas[Criticidade.CRITICA]:
-             # heapq.heappop já retorna o menor item (menor deadline)
-             proxima_tarefa = heapq.heappop(self.filas[Criticidade.CRITICA]) 
-             return proxima_tarefa
-        return None # Simplificado
-        '''
-        """
-    Este método agora atua como um maestro, impondo a hierarquia de criticidade
-    e delegando a seleção da tarefa para a estratégia correspondente.
-    """
-    inicio_selecao = time.perf_counter_ns() # Para medir o overhead
-
-    # 1. PRIORIDADE MÁXIMA: Fila de tarefas CRÍTICAS
-    # Acessa a fila e a estratégia para este nível de criticidade.
-    fila_critica = self.filas[Criticidade.CRITICA]
-    estrategia_critica = self.estrategias[Criticidade.CRITICA]
-
-    if fila_critica:
-        # Pede para a ESTRATÉGIA selecionar a tarefa. Não importa se é EDF ou outra.
-        tarefa_selecionada = estrategia_critica.selecionar(fila_critica)
-        
-        # A lógica de verificar se a tarefa está bloqueada continua aqui, pois é uma
-        # responsabilidade do escalonador principal, não da estratégia de seleção.
-        if tarefa_selecionada and tarefa_selecionada.estado != "BLOQUEADA":
-            # Mede o overhead e retorna a tarefa
-            fim_selecao = time.perf_counter_ns()
-            self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6
-            return tarefa_selecionada
-        elif tarefa_selecionada: # Se estava bloqueada, devolve para a fila
-            self._adicionar_tarefa_na_fila(tarefa_selecionada)
-
-
-    # 2. SEGUNDA PRIORIDADE: Fila de tarefas de TEMPO REAL
-    # A lógica se repete, mas para a próxima fila e sua respectiva estratégia.
-    fila_tempo_real = self.filas[Criticidade.TEMPO_REAL]
-    estrategia_tempo_real = self.estrategias[Criticidade.TEMPO_REAL]
-
-    if fila_tempo_real:
-        tarefa_selecionada = estrategia_tempo_real.selecionar(fila_tempo_real)
-        if tarefa_selecionada and tarefa_selecionada.estado != "BLOQUEADA":
-            fim_selecao = time.perf_counter_ns()
-            self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6
-            return tarefa_selecionada
-        elif tarefa_selecionada:
-            self._adicionar_tarefa_na_fila(tarefa_selecionada)
     
-
-    # 3. ÚLTIMA PRIORIDADE: Fila de tarefas de CONFORTO
-    fila_conforto = self.filas[Criticidade.CONFORTO]
-    estrategia_conforto = self.estrategias[Criticidade.CONFORTO]
-
-    if fila_conforto:
-        tarefa_selecionada = estrategia_conforto.selecionar(fila_conforto)
-        if tarefa_selecionada and tarefa_selecionada.estado != "BLOQUEADA":
-            fim_selecao = time.perf_counter_ns()
-            self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6
-            return tarefa_selecionada
-        elif tarefa_selecionada:
-            self._adicionar_tarefa_na_fila(tarefa_selecionada)
-
-    # Se nenhuma tarefa de nenhuma fila pôde ser selecionada, retorna None.
-    fim_selecao = time.perf_counter_ns()
-    self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6
-    return None
+    def selecionar_proxima_tarefa(self):
+        """
+        Este método implementa a lógica hierárquica de seleção de tarefas:
+        1. CRÍTICA (EDF)
+        2. TEMPO REAL (Round Robin)
+        3. CONFORTO (FIFO)
+        """
+        inicio_selecao = time.perf_counter_ns()
+    
+        # Anti-starvation para tarefas de CONFORTO
+        if (self.relogio_simulado - self.ultimo_conforto_executado) > 500.0 and self.filas[Criticidade.CONFORTO]:
+            tarefa_conforto = next((t for t in self.filas[Criticidade.CONFORTO] if t.estado != "BLOQUEADA"), None)
+            if tarefa_conforto:
+                print(f"    [ANTI-STARVATION] Forçando execução de '{tarefa_conforto.nome}'")
+                self.ultimo_conforto_executado = self.relogio_simulado
+                self.filas[Criticidade.CONFORTO].remove(tarefa_conforto)
+                return tarefa_conforto
+    
+        # 1. Verifica tarefas CRÍTICAS (EDF)
+        if self.filas[Criticidade.CRITICA]:
+            tarefa = heapq.heappop(self.filas[Criticidade.CRITICA])
+            if tarefa.estado != "BLOQUEADA":
+                fim_selecao = time.perf_counter_ns()
+                self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6
+                return tarefa
+            else:
+                heapq.heappush(self.filas[Criticidade.CRITICA], tarefa)
+    
+        # 2. Verifica tarefas de TEMPO REAL (RR)
+        if self.filas[Criticidade.TEMPO_REAL]:
+            for _ in range(len(self.filas[Criticidade.TEMPO_REAL])):
+                tarefa = self.filas[Criticidade.TEMPO_REAL].popleft()
+                if tarefa.estado != "BLOQUEADA":
+                    fim_selecao = time.perf_counter_ns()
+                    self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6
+                    return tarefa
+                self.filas[Criticidade.TEMPO_REAL].append(tarefa)
+    
+        # 3. Verifica tarefas de CONFORTO (FIFO)
+        if self.filas[Criticidade.CONFORTO]:
+            for _ in range(len(self.filas[Criticidade.CONFORTO])):
+                tarefa = self.filas[Criticidade.CONFORTO].popleft()
+                if tarefa.estado != "BLOQUEADA":
+                    fim_selecao = time.perf_counter_ns()
+                    self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6
+                    return tarefa
+                self.filas[Criticidade.CONFORTO].append(tarefa)
+    
+        fim_selecao = time.perf_counter_ns()
+        self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6
+        return None
 
     def simular(self):
         """
@@ -343,7 +315,7 @@ class EscalonadorCAV:
                 if tempo_restante_deadline < (tarefa_mais_urgente.deadline_relativo * 0.3): # Entrou nos 30% finais
                     self.ativar_modo_seguranca(tarefa_mais_urgente)
 
-           self._verificar_tarefas_periodicas()
+            self._verificar_tarefas_periodicas()
             
             proxima_tarefa = self.selecionar_proxima_tarefa()
 
@@ -660,140 +632,3 @@ if __name__ == "__main__":
     print("\n\n" + "="*60)
     print("COMPARAÇÃO FINAL: Analise os relatórios gerados por cada simulação.")
     print("="*60)
-
-'''
-class EscalonadorFIFO(EscalonadorCAV):
-    def escalonar(self):
-        """Escalonamento FIFO para veículos autônomos"""
-        tempo_inicial = 0
-        for tarefa in self.tarefas:
-            tarefa.tempo_inicio = tempo_inicial
-            tempo_inicial += tarefa.duracao
-            tarefa.tempo_final = tempo_inicial
-            print(f"Executando tarefa {tarefa.nome} de {tarefa.duracao} segundos.")
-            time.sleep(tarefa.duracao)  # Simula a execução da tarefa
-
-            # Registrando a sobrecarga, como exemplo, podemos adicionar um tempo fixo de sobrecarga
-            #self.registrar_sobrecarga(0.5)  # 0.5 segundos de sobrecarga por tarefa (simulando troca de contexto)
-            print(f"Tarefa {tarefa.nome} finalizada.\n")
-
-        self.exibir_sobrecarga()
-
-# O escalonador FIFO executa os processos na ordem em que foram adicionados, sem interrupção, até que todos os processos terminem.
-
-
-class EscalonadorRoundRobin(EscalonadorCAV):
-    def __init__(self, quantum):
-        super().__init__()
-        self.quantum = quantum
-
-    def escalonar(self):
-        """Escalonamento Round Robin com tarefas de CAVs"""
-        fila = deque(self.tarefas)
-        tempo_inicial = 0
-        while fila:
-            tarefa = fila.popleft()
-            if tarefa.tempo_restante > 0:
-                tarefa.tempo_inicio = tempo_inicial
-                tempo_exec = min(tarefa.tempo_restante, self.quantum)
-                tarefa.tempo_restante -= tempo_exec
-                tempo_inicial += tempo_exec
-                print(f"Executando tarefa {tarefa.nome} por {tempo_exec} segundos.")
-                time.sleep(tempo_exec)  # Simula a execução da tarefa
-
-                # Registrando a sobrecarga, como exemplo, podemos adicionar um tempo fixo de sobrecarga
-                self.registrar_sobrecarga(0.3)  # 0.3 segundos de sobrecarga por tarefa
-                if tarefa.tempo_restante > 0:
-                    fila.append(tarefa)  # Coloca a tarefa de volta na fila se não terminar
-                tarefa.tempo_final = tempo_inicial
-                print(f"Tarefa {tarefa.nome} finalizada ou ainda pendente.\n")
-
-        self.exibir_sobrecarga()
-
-# O escalonador Round Robin permite que cada processo seja executado por um tempo limitado (quantum).
-# Quando o processo termina ou o quantum é atingido, o próximo processo da fila é executado.
-# Se o processo não terminar no quantum, ele é colocado de volta na fila.
-
-
-class EscalonadorPrioridade(EscalonadorCAV):
-    def escalonar(self):
-        """Escalonamento por Prioridade (menor número = maior prioridade)"""
-        print("Escalonamento por Prioridade:")
-        # Ordena as tarefas pela prioridade
-        self.tarefas.sort(key=lambda tarefa: tarefa.prioridade)
-        tempo_inicial = 0
-        for tarefa in self.tarefas:
-            tarefa.tempo_inicio = tempo_inicial
-            tempo_inicial += tarefa.duracao
-            tarefa.tempo_final = tempo_inicial
-            print(f"Executando tarefa {tarefa.nome} de {tarefa.duracao} segundos com prioridade {tarefa.prioridade}.")
-            time.sleep(tarefa.duracao)
-
-            # Registrando a sobrecarga, como exemplo, podemos adicionar um tempo fixo de sobrecarga
-            self.registrar_sobrecarga(0.4)  # 0.4 segundos de sobrecarga por tarefa
-            print(f"Tarefa {tarefa.nome} finalizada.\n")
-
-        self.exibir_sobrecarga()
-
-
-class CAV:
-    def __init__(self, id):
-        self.id = id  # Identificador único para cada CAV
-        self.tarefas = []  # Lista de tarefas atribuídas a esse CAV
-
-    def adicionar_tarefa(self, tarefa):
-        self.tarefas.append(tarefa)
-
-    def executar_tarefas(self, escalonador):
-        print(f"CAV {self.id} começando a execução de tarefas...\n")
-        escalonador.escalonar()
-        print(f"CAV {self.id} terminou todas as suas tarefas.\n")
-
-
-# Função para criar algumas tarefas fictícias
-def criar_tarefas():
-    tarefas = [
-        TarefaCAV("Detecção de Obstáculo", random.randint(5, 10), prioridade=1),
-        TarefaCAV("Planejamento de Rota", random.randint(3, 6), prioridade=2),
-        TarefaCAV("Manutenção de Velocidade", random.randint(2, 5), prioridade=3),
-        TarefaCAV("Comunicando com Infraestrutura", random.randint(4, 7), prioridade=1)
-    ]
-    return tarefas
-    
-# Exemplo de uso
-if __name__ == "__main__":
-    # Criar algumas tarefas fictícias
-    tarefas = criar_tarefas()
-
-    # Criar um CAV
-    cav = CAV(id=1)
-    for t in tarefas:
-        cav.adicionar_tarefa(t)
-
-    # Criar um escalonador FIFO
-    print("Simulando CAV com FIFO:\n")
-    escalonador_fifo = EscalonadorFIFO()
-    for t in tarefas:
-        escalonador_fifo.adicionar_tarefa(t)
-
-    simulador_fifo = CAV(id=1)
-    simulador_fifo.executar_tarefas(escalonador_fifo)
-
-    # Criar um escalonador Round Robin com quantum de 3 segundos
-    print("\nSimulando CAV com Round Robin:\n")
-    escalonador_rr = EscalonadorRoundRobin(quantum=3)
-    for t in tarefas:
-        escalonador_rr.adicionar_tarefa(t)
-
-    simulador_rr = CAV(id=1)
-    simulador_rr.executar_tarefas(escalonador_rr)
-
-    # Criar um escalonador por Prioridade
-    print("\nSimulando CAV com Escalonamento por Prioridade:\n")
-    escalonador_prio = EscalonadorPrioridade()
-    for t in tarefas:
-        escalonador_prio.adicionar_tarefa(t)
-
-    simulador_prio = CAV(id=1)
-    simulador_prio.executar_tarefas(escalonador_prio)
-'''
