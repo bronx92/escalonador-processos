@@ -176,11 +176,11 @@ class EscalonadorCAV:
                 periodo=tarefa.periodo,
                 recurso_necessario=tarefa.recurso_necessario
             )
-        template.tempo_ultima_liberacao = self.relogio_simulado
+            template.tempo_ultima_liberacao = self.relogio_simulado
         
-        self.tarefas_periodicas_template.append(template)
-        print(f"-> [PERIÓDICA] Template registrado para '{tarefa.nome}' com período {tarefa.periodo}ms")
-        template.tempo_ultima_liberacao = self.relogio_simulado
+            self.tarefas_periodicas_template.append(template)
+            print(f"-> [PERIÓDICA] Template registrado para '{tarefa.nome}' com período {tarefa.periodo}ms")
+    
         
         self.tarefas_periodicas_template.append(template)
         print(f"-> [PERIÓDICA] Template registrado para '{tarefa.nome}' com período {tarefa.periodo}ms")
@@ -201,30 +201,30 @@ class EscalonadorCAV:
             fila_alvo.append(tarefa)
 
     def _verificar_tarefas_periodicas(self):
-    """Verifica e gera novas instâncias de tarefas periódicas."""
-    for template in self.tarefas_periodicas_template[:]:
-        proxima_liberacao = template.tempo_ultima_liberacao + template.periodo
-        
-        if self.relogio_simulado >= proxima_liberacao:
-            nova_instancia = TarefaCAV(
-                nome=template.nome,
-                duracao=template.duracao,
-                criticidade=template.criticidade,
-                deadline_relativo=template.deadline_relativo,
-                periodo=template.periodo,
-                recurso_necessario=template.recurso_necessario
-            )
+        """Verifica e gera novas instâncias de tarefas periódicas."""
+        for template in self.tarefas_periodicas_template[:]:
+            proxima_liberacao = template.tempo_ultima_liberacao + template.periodo
             
-            # Configura tempos da nova instância
-            nova_instancia.tempo_chegada = proxima_liberacao
-            if nova_instancia.deadline_relativo:
-                nova_instancia.deadline_absoluto = proxima_liberacao + nova_instancia.deadline_relativo
-            
-            # Atualiza template para próxima liberação
-            template.tempo_ultima_liberacao = proxima_liberacao
-            
-            self._adicionar_tarefa_na_fila(nova_instancia)
-            print(f"-> [PERIÓDICA] Nova instância de '{template.nome}' gerada em {self.relogio_simulado:.2f}ms")
+            if self.relogio_simulado >= proxima_liberacao:
+                nova_instancia = TarefaCAV(
+                    nome=template.nome,
+                    duracao=template.duracao,
+                    criticidade=template.criticidade,
+                    deadline_relativo=template.deadline_relativo,
+                    periodo=template.periodo,
+                    recurso_necessario=template.recurso_necessario
+                )
+                
+                # Configura tempos da nova instância
+                nova_instancia.tempo_chegada = proxima_liberacao
+                if nova_instancia.deadline_relativo:
+                    nova_instancia.deadline_absoluto = proxima_liberacao + nova_instancia.deadline_relativo
+                
+                # Atualiza template para próxima liberação
+                template.tempo_ultima_liberacao = proxima_liberacao
+                
+                self._adicionar_tarefa_na_fila(nova_instancia)
+                print(f"-> [PERIÓDICA] Nova instância de '{template.nome}' gerada em {self.relogio_simulado:.2f}ms")
 
     def ativar_modo_seguranca(self, tarefa_gatilho: TarefaCAV):
         if self.filas[Criticidade.CONFORTO]:
@@ -249,7 +249,9 @@ class EscalonadorCAV:
                 if tarefa.estado != "BLOQUEADA":
                     print(f"    [ANTI-STARVATION] Forçando execução de '{tarefa.nome}'")
                     self.ultimo_conforto_executado = self.relogio_simulado
-                    return self.filas[Criticidade.CONFORTO][i]
+                    tarefa_selecionada = self.filas[Criticidade.CONFORTO][i]
+                    del self.filas[Criticidade.CONFORTO][i]  # Remove a tarefa da fila
+                    return tarefa_selecionada
     
         # 1. Verifica tarefas CRÍTICAS (EDF)
         if self.filas[Criticidade.CRITICA]:
@@ -315,17 +317,17 @@ class EscalonadorCAV:
                 self.filas[Criticidade.TEMPO_REAL],
                 self.filas[Criticidade.CONFORTO]
             ]):
-                # --- CORREÇÃO 3: MONITORAMENTO CONTÍNUO DE DEADLINES ---
-                if self.filas[Criticidade.CRITICA]:
-                    # O primeiro item no heap é o que tem o deadline mais próximo
-                    tarefa_mais_urgente = self.filas[Criticidade.CRITICA][0]
-                    tempo_restante_deadline = tarefa_mais_urgente.deadline_absoluto - self.relogio_simulado
-                    if tempo_restante_deadline < (tarefa_mais_urgente.deadline_relativo * 0.3): # Entrou nos 30% finais
-                        self.ativar_modo_seguranca(tarefa_mais_urgente)
-    
-                self._verificar_tarefas_periodicas()
-                
-                proxima_tarefa = self.selecionar_proxima_tarefa()
+            # --- CORREÇÃO 3: MONITORAMENTO CONTÍNUO DE DEADLINES ---
+            if self.filas[Criticidade.CRITICA]:
+                # O primeiro item no heap é o que tem o deadline mais próximo
+                tarefa_mais_urgente = self.filas[Criticidade.CRITICA][0]
+                tempo_restante_deadline = tarefa_mais_urgente.deadline_absoluto - self.relogio_simulado
+                if tempo_restante_deadline < (tarefa_mais_urgente.deadline_relativo * 0.3): # Entrou nos 30% finais
+                    self.ativar_modo_seguranca(tarefa_mais_urgente)
+
+            self._verificar_tarefas_periodicas()
+            
+            proxima_tarefa = self.selecionar_proxima_tarefa()
 
             if self.tarefa_em_execucao is None:
                 if proxima_tarefa:
