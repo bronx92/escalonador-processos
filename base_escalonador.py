@@ -493,24 +493,40 @@ class EstrategiaFIFO(EstrategiaDeFila):
             return fila_deque.popleft()
         return None
 
-class EscalonadorHibrido(EscalonadorCAV): # A classe base EscalonadorCAV continua a mesma
+class EscalonadorHibrido(EscalonadorCAV):
     """
     Um escalonador configurável que utiliza diferentes estratégias para cada
     nível de criticidade.
     """
     def __init__(self, estrategias_por_criticidade: dict):
-        super().__init__() # Chama o init da classe base
+        super().__init__()  # Chama o init da classe base
         
-        # Em vez de lógica hard-coded, agora ele armazena as estratégias
+        # Inicializa filas com os tipos corretos para cada estratégia
+        self.filas = {
+            Criticidade.CRITICA: [],  # Heap para EDF
+            Criticidade.TEMPO_REAL: deque() if isinstance(estrategias_por_criticidade[Criticidade.TEMPO_REAL], (EstrategiaRoundRobin, EstrategiaFIFO)) else [],
+            Criticidade.CONFORTO: deque() if isinstance(estrategias_por_criticidade[Criticidade.CONFORTO], (EstrategiaRoundRobin, EstrategiaFIFO)) else []
+        }
+        
         self.estrategias = estrategias_por_criticidade
-        
-        # O motor de simulação (avançar tempo, preempção, etc.) permanece na classe base.
+        self.gerenciador_recursos = GerenciadorRecursos()
+        self.tarefa_em_execucao = None
+        self.tarefas_concluidas = []
+        self.overhead_total_escalonamento = 0.0
+        self.ultimo_conforto_executado = 0.0
+        self.metricas = {
+            "wcrt_critico": 0.0,
+            "deadlines_perdidos": 0,
+            "max_jitter_periodico": 0.0,
+            "modos_seguranca_ativados": 0
+        }
+        self.tarefas_periodicas_template = []
 
     def _adicionar_tarefa_na_fila(self, tarefa: TarefaCAV):
         """Delega a adição da tarefa para a estratégia correta."""
-        fila_alvo = self.filas[tarefa.criticidade]
-        estrategia_alvo = self.estrategias[tarefa.criticidade]
-        estrategia_alvo.adicionar(fila_alvo, tarefa)
+        estrategia = self.estrategias[tarefa.criticidade]
+        fila = self.filas[tarefa.criticidade]
+        estrategia.adicionar(fila, tarefa)
 
     def selecionar_proxima_tarefa(self):
         """
@@ -520,38 +536,29 @@ class EscalonadorHibrido(EscalonadorCAV): # A classe base EscalonadorCAV continu
         # 1. Verifica fila CRÍTICA
         fila_critica = self.filas[Criticidade.CRITICA]
         if fila_critica:
-            # Pede para a estratégia EDF selecionar a próxima tarefa
             tarefa = self.estrategias[Criticidade.CRITICA].selecionar(fila_critica)
-            if tarefa:
-                # É preciso verificar se a tarefa não está bloqueada
-                if tarefa.estado != "BLOQUEADA":
-                    return tarefa
-                else:
-                    # Se estiver bloqueada, devolve para a fila e continua a busca
-                    self._adicionar_tarefa_na_fila(tarefa)
-        
-        # A lógica de preempção continua a mesma...
+            if tarefa and tarefa.estado != "BLOQUEADA":
+                return tarefa
+            elif tarefa:
+                self._adicionar_tarefa_na_fila(tarefa)
         
         # 2. Verifica fila TEMPO REAL
         fila_tr = self.filas[Criticidade.TEMPO_REAL]
         if fila_tr:
             tarefa = self.estrategias[Criticidade.TEMPO_REAL].selecionar(fila_tr)
-            if tarefa:
-                if tarefa.estado != "BLOQUEADA":
-                    # No RR, a tarefa é devolvida à fila no loop principal se não terminar
-                    return tarefa
-                else:
-                    self._adicionar_tarefa_na_fila(tarefa)
+            if tarefa and tarefa.estado != "BLOQUEADA":
+                return tarefa
+            elif tarefa:
+                self._adicionar_tarefa_na_fila(tarefa)
         
         # 3. Verifica fila CONFORTO
         fila_conforto = self.filas[Criticidade.CONFORTO]
         if fila_conforto:
             tarefa = self.estrategias[Criticidade.CONFORTO].selecionar(fila_conforto)
-            if tarefa:
-                if tarefa.estado != "BLOQUEADA":
-                     return tarefa
-                else:
-                    self._adicionar_tarefa_na_fila(tarefa)
+            if tarefa and tarefa.estado != "BLOQUEADA":
+                return tarefa
+            elif tarefa:
+                self._adicionar_tarefa_na_fila(tarefa)
         
         return None
 
