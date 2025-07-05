@@ -581,17 +581,87 @@ class EscalonadorHibrido(EscalonadorCAV): # A classe base EscalonadorCAV continu
         
         return None
 
+def criar_cenario_de_teste():
+    """
+    Cria uma lista de tarefas realista para simular um cenário de VAC.
+    Isso garante que ambos os escalonadores sejam testados com a mesma carga de trabalho.
+    """
+    tarefas = [
+        # Tarefas Críticas (Segurança) - Devem ser executadas antes de seus deadlines.
+        TarefaCAV(nome="Verificar Freios ABS", duracao=5.0, criticidade=Criticidade.CRITICA, deadline_relativo=20.0),
+        TarefaCAV(nome="Ajustar Estabilidade", duracao=10.0, criticidade=Criticidade.CRITICA, deadline_relativo=50.0),
+
+        # Tarefas de Tempo Real (Operacionais) - Devem ser responsivas.
+        TarefaCAV(nome="Processar Radar Frontal", duracao=25.0, criticidade=Criticidade.TEMPO_REAL),
+        TarefaCAV(nome="Calcular Rota GPS", duracao=60.0, criticidade=Criticidade.TEMPO_REAL),
+        TarefaCAV(nome="Comunicacao V2V", duracao=15.0, criticidade=Criticidade.TEMPO_REAL),
+
+        # Tarefas de Conforto (Não Essenciais) - Podem esperar.
+        TarefaCAV(nome="Atualizar Display Multimidia", duracao=100.0, criticidade=Criticidade.CONFORTO),
+        TarefaCAV(nome="Sincronizar Playlist", duracao=150.0, criticidade=Criticidade.CONFORTO)
+    ]
+    return tarefas
 
 
+if __name__ == "__main__":
+    # --- Cenário 1: Escalonador Híbrido Padrão (EDF + RR + FIFO) ---
+    print("="*60)
+    print("--- EXECUTANDO CENÁRIO 1: ESCALONADOR HÍBRIDO PADRÃO (EDF + RR) ---")
+    print("="*60)
+    
+    # 1. Crie instâncias das estratégias que você quer usar
+    estrategia_edf_1 = EstrategiaEDF()
+    estrategia_rr_1 = EstrategiaRoundRobin(quantum=20.0) # Quantum de 20ms
+    estrategia_fifo_1 = EstrategiaFIFO()
+
+    # 2. Crie um dicionário que mapeia criticidade para a estratégia desejada
+    configuracao_escalonador1 = {
+        Criticidade.CRITICA: estrategia_edf_1,
+        Criticidade.TEMPO_REAL: estrategia_rr_1,
+        Criticidade.CONFORTO: estrategia_fifo_1
+    }
+
+    # 3. Crie o escalonador passando a configuração
+    escalonador_hibrido1 = EscalonadorHibrido(estrategias_por_criticidade=configuracao_escalonador1)
+    
+    # 4. Adicione as tarefas do cenário de teste
+    cenario1 = criar_cenario_de_teste()
+    for tarefa in cenario1:
+        escalonador_hibrido1.adicionar_tarefa(tarefa)
+    
+    # 5. Execute a simulação
+    # O método simular() agora também será responsável por gerar o relatório no final.
+    # escalonador_hibrido1.simular() # Descomente esta linha quando o método simular estiver pronto.
+    print("\nSimulação para o cenário 1 estaria completa aqui.")
 
 
+    # --- Cenário 2: Uma Nova Combinação Experimental (EDF + FIFO + FIFO) ---
+    print("\n\n" + "="*60)
+    print("--- EXECUTANDO CENÁRIO 2: ESCALONADOR EXPERIMENTAL (EDF + FIFO) ---")
+    print("="*60)
+    
+    # Reutilizamos as estratégias ou criamos novas para clareza
+    configuracao_escalonador2 = {
+        Criticidade.CRITICA: EstrategiaEDF(),
+        Criticidade.TEMPO_REAL: EstrategiaFIFO(), # <-- A única mudança está aqui!
+        Criticidade.CONFORTO: EstrategiaFIFO()
+    }
 
+    escalonador_hibrido2 = EscalonadorHibrido(estrategias_por_criticidade=configuracao_escalonador2)
+    
+    # Usamos o MESMO cenário de teste para uma comparação justa
+    cenario2 = criar_cenario_de_teste()
+    for tarefa in cenario2:
+        escalonador_hibrido2.adicionar_tarefa(tarefa)
 
+    # Execute a segunda simulação para comparar os resultados
+    # escalonador_hibrido2.simular() # Descomente esta linha quando o método simular estiver pronto.
+    print("\nSimulação para o cenário 2 estaria completa aqui.")
+    print("\n\n" + "="*60)
+    print("COMPARAÇÃO FINAL: Analise os relatórios gerados por cada simulação.")
+    print("="*60)
 
-
-
-
-
+'''
 class EscalonadorFIFO(EscalonadorCAV):
     def escalonar(self):
         """Escalonamento FIFO para veículos autônomos"""
@@ -689,49 +759,7 @@ def criar_tarefas():
         TarefaCAV("Comunicando com Infraestrutura", random.randint(4, 7), prioridade=1)
     ]
     return tarefas
-
-if __name__ == "__main__":
-    # --- Cenário 1: Escalonador Híbrido Padrão (EDF + RR + FIFO) ---
-    print("--- CONFIGURANDO ESCALONADOR HÍBRIDO PADRÃO ---")
     
-    # 1. Crie instâncias das estratégias que você quer usar
-    estrategia_edf = EstrategiaEDF()
-    estrategia_rr = EstrategiaRoundRobin(quantum=20.0)
-    estrategia_fifo = EstrategiaFIFO()
-
-    # 2. Crie um dicionário que mapeia criticidade para a estratégia desejada
-    configuracao_escalonador1 = {
-        Criticidade.CRITICA: estrategia_edf,
-        Criticidade.TEMPO_REAL: estrategia_rr,
-        Criticidade.CONFORTO: estrategia_fifo
-    }
-
-    # 3. Crie o escalonador passando a configuração
-    escalonador_hibrido1 = EscalonadorHibrido(estrategias_por_criticidade=configuracao_escalonador1)
-    
-    # Adicione as tarefas...
-    # ...
-    # escalonador_hibrido1.simular()
-
-    
-    # --- Cenário 2: Uma Nova Combinação Experimental (EDF + FIFO + FIFO) ---
-    print("\n--- CONFIGURANDO ESCALONADOR HÍBRIDO EXPERIMENTAL ---")
-    
-    # Você não precisa recriar tudo! Apenas componha de forma diferente.
-    # Vamos supor que você queira testar se usar FIFO para tarefas de TEMPO REAL
-    # é melhor em algum cenário específico.
-    
-    configuracao_escalonador2 = {
-        Criticidade.CRITICA: EstrategiaEDF(),
-        Criticidade.TEMPO_REAL: EstrategiaFIFO(), # <-- A única mudança está aqui!
-        Criticidade.CONFORTO: EstrategiaFIFO()
-    }
-
-    escalonador_hibrido2 = EscalonadorHibrido(estrategias_por_criticidade=configuracao_escalonador2)
-    
-    print("Escalonador experimental criado com sucesso. Pronto para simulação.")
-
-'''
 # Exemplo de uso
 if __name__ == "__main__":
     # Criar algumas tarefas fictícias
