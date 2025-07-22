@@ -92,7 +92,7 @@ class GerenciadorRecursos:
             "tempo_bloqueio": time.perf_counter_ns(),
             "recurso": recurso
         }
-        print(f"⚡ Tarefa {tarefa.nome} bloqueada aguardando {recurso}")
+        
 
 
     def verificar_timeouts(self, tempo_atual):
@@ -157,25 +157,19 @@ class GerenciadorRecursos:
                 return
 
             recurso = self.recursos[nome_recurso]
-            if recurso["dono"] == tarefa:
+            recurso = self.recursos[nome_recurso]
+            tarefa.prioridade_atual = tarefa.prioridade_original
+
+            if recurso["fila_espera"]:
+                _, _, proxima_tarefa = heapq.heappop(recurso["fila_espera"])
+                recurso["dono"] = proxima_tarefa
+                proxima_tarefa.estado = "PRONTA" # A tarefa é desbloqueada
+                print(f"    [RECURSO] '{tarefa.nome}' liberou '{nome_recurso}'. '{proxima_tarefa.nome}' foi desbloqueada.")
                 # Remover do controle de timeout
                 if nome_recurso in self.recursos_alocados:
                     del self.recursos_alocados[nome_recurso]
-                
-                # Restaurar prioridade original
-                tarefa.prioridade_atual = tarefa.prioridade_original
-                
-                if recurso["fila_espera"]:
-                    _, _, proxima_tarefa = heapq.heappop(recurso["fila_espera"])
-                    recurso["dono"] = proxima_tarefa
-                    proxima_tarefa.estado = "PRONTA"
-                    
-                    # Registrar nova alocação para timeout
-                    self.recursos_alocados[nome_recurso] = (proxima_tarefa, time.perf_counter_ns())
-                    
-                    print(f"    [RECURSO] '{tarefa.nome}' liberou '{nome_recurso}'. '{proxima_tarefa.nome}' agora é dona.")
-                else:
-                    recurso["dono"] = None
+                    del self.recursos_alocados[nome_recurso]
+                recurso["dono"] = None
 
 # ==============================================================================
 # PILAR 3: ARQUITETURA DO ESCALONADOR (COM MÉTRICAS E SEGURANÇA)
@@ -330,9 +324,7 @@ class EscalonadorCAV:
                     fim_selecao = time.perf_counter_ns()
                     self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6
                     return tarefa
-                else:
-                # ALTERAÇÃO AQUI: Não recoloca, envia para gerenciador
-                self.gerenciador_recursos.adicionar_tarefa_bloqueada(tarefa)
+                
     
         # 3. Verifica tarefas de CONFORTO (FIFO)
         if self.filas[Criticidade.CONFORTO]:
@@ -351,124 +343,124 @@ class EscalonadorCAV:
     def simular(self):
         tempo_inicio = time.perf_counter_ns()
         
-        while self.tempo_simulacao < TEMPO_TOTAL_SIMULACAO:
-            tempo_atual = (time.perf_counter_ns() - tempo_inicio) / 1e6  # ms
-
-            # 1. Verificar timeouts periodicamente            
-            if self.gerenciador_recursos.verificar_timeouts(tempo_atual):
-                continue # Se houve timeout, reiniciar seleção
         
-            """Motor principal da simulação."""
-            print("\n--- INÍCIO DA SIMULAÇÃO ---")
-            
-            # Validação inicial de certificados
-            for fila in list(self.filas.values()):
-                for tarefa in list(fila):
-                    if not self.validar_certificado(tarefa):
-                        print(f"ALERTA! Tarefa '{tarefa.nome}' com certificado inválido. Removendo.")
-                        if isinstance(fila, list):
-                            fila.remove(tarefa)
-                        elif isinstance(fila, deque):
-                            if tarefa in fila:
-                                fila.remove(tarefa)
-            
-            # Loop principal de simulação
-            while any([self.tarefa_em_execucao, 
-                    self.filas[Criticidade.CRITICA],
-                    self.filas[Criticidade.TEMPO_REAL],
-                    self.filas[Criticidade.CONFORTO]]):
-                
-                # 1. Verificar e gerar novas instâncias de tarefas periódicas
-                self._verificar_tarefas_periodicas()
-                
-                # 2. Monitorar deadlines críticos para ativação do modo segurança
-                if self.filas[Criticidade.CRITICA]:
-                    tarefa_critica = self.filas[Criticidade.CRITICA][0]
-                    tempo_restante = tarefa_critica.deadline_absoluto - self.relogio_simulado
-                    if tempo_restante < (tarefa_critica.deadline_relativo * 0.3):
-                        self.ativar_modo_seguranca(tarefa_critica)
-                
-                # 3. Selecionar próxima tarefa para execução (com preempção)
-                nova_tarefa = self.selecionar_proxima_tarefa()
-                if nova_tarefa:
-                    # Verificar se precisa preemptar a tarefa atual
-                    if self.tarefa_em_execucao and (nova_tarefa.criticidade.value < self.tarefa_em_execucao.criticidade.value):
-                        print(f"    [PREEMPÇÃO] '{self.tarefa_em_execucao.nome}' por '{nova_tarefa.nome}'")
-                        self.adicionar_tarefa_na_fila(self.tarefa_em_execucao)
-                        self.tarefa_em_execucao = None
-                    
-                    # Iniciar execução da nova tarefa
-                    if not self.tarefa_em_execucao:
-                        self.tarefa_em_execucao = nova_tarefa
-                        if self.tarefa_em_execucao.tempo_inicio_execucao == -1:
-                            self.tarefa_em_execucao.tempo_inicio_execucao = self.relogio_simulado
-                        print(f"Tempo: {self.relogio_simulado:6.2f} ms | Iniciando: {self.tarefa_em_execucao.nome}")
-                
-                # 4. Executar a tarefa atual (se existir)
-                if self.tarefa_em_execucao:
-                    # Verificar se precisa de recurso
-                    if self.tarefa_em_execucao.recurso_necessario:
-                        recurso_obtido = self.gerenciador_recursos.solicitar(
-                            self.tarefa_em_execucao, 
-                            self.tarefa_em_execucao.recurso_necessario, 
-                            self
-                        )
-                        if not recurso_obtido:
-                            print(f"    [BLOQUEIO] '{self.tarefa_em_execucao.nome}' aguardando recurso")
-                            self.tarefa_em_execucao = None
-                            continue
-                    
-                    # Determinar tempo de execução neste ciclo
-                    if self.tarefa_em_execucao.criticidade == Criticidade.TEMPO_REAL:
-                        tempo_exec = min(self.quantum_rr, self.tarefa_em_execucao.tempo_restante)
-                    else:
-                        tempo_exec = min(1.0, self.tarefa_em_execucao.tempo_restante)  # Passo de 1ms
-                    
-                    # Executar a tarefa
-                    self.tarefa_em_execucao.tempo_restante -= tempo_exec
-                    self.relogio_simulado += tempo_exec
-                    
-                    print(f"Tempo: {self.relogio_simulado:6.2f} ms | Executando: {self.tarefa_em_execucao.nome} ({self.tarefa_em_execucao.tempo_restante:.2f}ms rest.)")
-                    
-                    # Verificar se tarefa concluiu
-                    if self.tarefa_em_execucao.tempo_restante <= 0:
-                        self.tarefa_em_execucao.estado = "CONCLUIDA"
-                        self.tarefa_em_execucao.tempo_final_execucao = self.relogio_simulado
-                        self.tarefas_concluidas.append(self.tarefa_em_execucao)
-                        print(f"    [CONCLUÍDA] '{self.tarefa_em_execucao.nome}' finalizada")
-                        
-                        # Liberar recursos se necessário
-                        if self.tarefa_em_execucao.recurso_necessario:
-                            self.gerenciador_recursos.liberar(
-                                self.tarefa_em_execucao, 
-                                self.tarefa_em_execucao.recurso_necessario
-                            )
-                        
-                        self.tarefa_em_execucao = None
-                    
-                    # Devolver à fila se for RR e não terminou
-                    elif self.tarefa_em_execucao.criticidade == Criticidade.TEMPO_REAL:
-                        self.adicionar_tarefa_na_fila(self.tarefa_em_execucao)
-                        self.tarefa_em_execucao = None
-                        
-                if tarefa.concluida:
-                    # Atualiza WCRT para tarefas críticas
-                    if tarefa.criticidade == Criticidade.CRITICA:
-                        tempo_resposta = tarefa.tempo_conclusao - tarefa.tempo_liberacao
-                        self.metricas['wcrt_critico'] = max(self.metricas['wcrt_critico'], tempo_resposta)
-                    
-                    # Verifica deadlines perdidos
-                    if hasattr(tarefa, 'deadline_relativo') and tarefa.tempo_conclusao > tarefa.deadline_absoluto:
-                        self.metricas['deadlines_perdidos'] += 1
-                        raise DeadlinePerdidoError(tarefa.nome)
+        tempo_atual = (time.perf_counter_ns() - tempo_inicio) / 1e6  # ms
 
-                # 5. Avançar tempo se sistema ocioso
-                else:
-                    self.relogio_simulado += 1.0
-                    time.sleep(0.001)  # Evitar consumo excessivo de CPU
+        '''# 1. Verificar timeouts periodicamente            
+        if self.gerenciador_recursos.verificar_timeouts(tempo_atual):
+            continue # Se houve timeout, reiniciar seleção'''
+    
+        """Motor principal da simulação."""
+        print("\n--- INÍCIO DA SIMULAÇÃO ---")
+        
+        # Validação inicial de certificados
+        for fila in list(self.filas.values()):
+            for tarefa in list(fila):
+                if not self.validar_certificado(tarefa):
+                    print(f"ALERTA! Tarefa '{tarefa.nome}' com certificado inválido. Removendo.")
+                    if isinstance(fila, list):
+                        fila.remove(tarefa)
+                    elif isinstance(fila, deque):
+                        if tarefa in fila:
+                            fila.remove(tarefa)
+        
+        # Loop principal de simulação
+        while any([self.tarefa_em_execucao, 
+                self.filas[Criticidade.CRITICA],
+                self.filas[Criticidade.TEMPO_REAL],
+                self.filas[Criticidade.CONFORTO]]):
             
-            print("--- FIM DA SIMULAÇÃO ---")
-            self.gerar_relatorio()
+            # 1. Verificar e gerar novas instâncias de tarefas periódicas
+            self._verificar_tarefas_periodicas()
+            
+            # 2. Monitorar deadlines críticos para ativação do modo segurança
+            if self.filas[Criticidade.CRITICA]:
+                tarefa_critica = self.filas[Criticidade.CRITICA][0]
+                tempo_restante = tarefa_critica.deadline_absoluto - self.relogio_simulado
+                if tempo_restante < (tarefa_critica.deadline_relativo * 0.3):
+                    self.ativar_modo_seguranca(tarefa_critica)
+            
+            # 3. Selecionar próxima tarefa para execução (com preempção)
+            nova_tarefa = self.selecionar_proxima_tarefa()
+            if nova_tarefa:
+                # Verificar se precisa preemptar a tarefa atual
+                if self.tarefa_em_execucao and (nova_tarefa.criticidade.value < self.tarefa_em_execucao.criticidade.value):
+                    print(f"    [PREEMPÇÃO] '{self.tarefa_em_execucao.nome}' por '{nova_tarefa.nome}'")
+                    self.adicionar_tarefa_na_fila(self.tarefa_em_execucao)
+                    self.tarefa_em_execucao = None
+                
+                # Iniciar execução da nova tarefa
+                if not self.tarefa_em_execucao:
+                    self.tarefa_em_execucao = nova_tarefa
+                    if self.tarefa_em_execucao.tempo_inicio_execucao == -1:
+                        self.tarefa_em_execucao.tempo_inicio_execucao = self.relogio_simulado
+                    print(f"Tempo: {self.relogio_simulado:6.2f} ms | Iniciando: {self.tarefa_em_execucao.nome}")
+            
+            # 4. Executar a tarefa atual (se existir)
+            if self.tarefa_em_execucao:
+                # Verificar se precisa de recurso
+                if self.tarefa_em_execucao.recurso_necessario:
+                    recurso_obtido = self.gerenciador_recursos.solicitar(
+                        self.tarefa_em_execucao, 
+                        self.tarefa_em_execucao.recurso_necessario, 
+                        self
+                    )
+                    if not recurso_obtido:
+                        print(f"    [BLOQUEIO] '{self.tarefa_em_execucao.nome}' aguardando recurso")
+                        self.tarefa_em_execucao = None
+                        continue
+                
+                # Determinar tempo de execução neste ciclo
+                if self.tarefa_em_execucao.criticidade == Criticidade.TEMPO_REAL:
+                    tempo_exec = min(self.quantum_rr, self.tarefa_em_execucao.tempo_restante)
+                else:
+                    tempo_exec = min(1.0, self.tarefa_em_execucao.tempo_restante)  # Passo de 1ms
+                
+                # Executar a tarefa
+                self.tarefa_em_execucao.tempo_restante -= tempo_exec
+                self.relogio_simulado += tempo_exec
+                
+                print(f"Tempo: {self.relogio_simulado:6.2f} ms | Executando: {self.tarefa_em_execucao.nome} ({self.tarefa_em_execucao.tempo_restante:.2f}ms rest.)")
+                
+                # Verificar se tarefa concluiu
+                if self.tarefa_em_execucao.tempo_restante <= 0:
+                    self.tarefa_em_execucao.estado = "CONCLUIDA"
+                    self.tarefa_em_execucao.tempo_final_execucao = self.relogio_simulado
+                    self.tarefas_concluidas.append(self.tarefa_em_execucao)
+                    print(f"    [CONCLUÍDA] '{self.tarefa_em_execucao.nome}' finalizada")
+                    
+                    # Liberar recursos se necessário
+                    if self.tarefa_em_execucao.recurso_necessario:
+                        self.gerenciador_recursos.liberar(
+                            self.tarefa_em_execucao, 
+                            self.tarefa_em_execucao.recurso_necessario
+                        )
+                    
+                    self.tarefa_em_execucao = None
+                
+                # Devolver à fila se for RR e não terminou
+                elif self.tarefa_em_execucao.criticidade == Criticidade.TEMPO_REAL:
+                    self.adicionar_tarefa_na_fila(self.tarefa_em_execucao)
+                    self.tarefa_em_execucao = None
+                    
+            if tarefa.concluida:
+                # Atualiza WCRT para tarefas críticas
+                if tarefa.criticidade == Criticidade.CRITICA:
+                    tempo_resposta = tarefa.tempo_conclusao - tarefa.tempo_liberacao
+                    self.metricas['wcrt_critico'] = max(self.metricas['wcrt_critico'], tempo_resposta)
+                
+                # Verifica deadlines perdidos
+                if hasattr(tarefa, 'deadline_relativo') and tarefa.tempo_conclusao > tarefa.deadline_absoluto:
+                    self.metricas['deadlines_perdidos'] += 1
+                    raise DeadlinePerdidoError(tarefa.nome)
+
+            # 5. Avançar tempo se sistema ocioso
+            else:
+                self.relogio_simulado += 1.0
+                time.sleep(0.001)  # Evitar consumo excessivo de CPU
+        
+        print("--- FIM DA SIMULAÇÃO ---")
+        self.gerar_relatorio()
     
     def gerar_relatorio(self):        
         """Calcula e exibe as métricas de desempenho e segurança."""
@@ -560,6 +552,7 @@ class EstrategiaDeFila(ABC):
 
 class EstrategiaEDF(EstrategiaDeFila):
     """Estratégia Earliest Deadline First usando um min-heap."""
+    """Estratégia Earliest Deadline First usando um min-heap."""
     def selecionar(self, fila_heap):
         if fila_heap:
             return heapq.heappop(fila_heap)
@@ -569,6 +562,7 @@ class EstrategiaEDF(EstrategiaDeFila):
         heapq.heappush(fila_heap, tarefa)
 
 class EstrategiaRoundRobin(EstrategiaDeFila):
+    """Estratégia Round Robin usando uma fila deque."""
     """Estratégia Round Robin usando uma fila deque."""
     def __init__(self, quantum):
         self.quantum = quantum
@@ -581,6 +575,7 @@ class EstrategiaRoundRobin(EstrategiaDeFila):
     # O método de adicionar padrão (append) já serve para o RR.
 
 class EstrategiaFIFO(EstrategiaDeFila):
+    """Estratégia First-In, First-Out usando uma fila deque."""
     """Estratégia First-In, First-Out usando uma fila deque."""
     def selecionar(self, fila_deque):
         if fila_deque:
@@ -652,7 +647,7 @@ def criar_cenario_de_teste():
         TarefaCAV(nome="Atualizar Display Multimidia", duracao=100.0, criticidade=Criticidade.CONFORTO),
         TarefaCAV(nome="Sincronizar Playlist", duracao=150.0, criticidade=Criticidade.CONFORTO)
     ]
-    return tarefas
+    
 
 
 if __name__ == "__main__":
@@ -712,3 +707,5 @@ if __name__ == "__main__":
     print("\n\n" + "="*60)
     print("COMPARAÇÃO FINAL: Analise os relatórios gerados por cada simulação.")
     print("="*60)
+    print("="*60)
+
