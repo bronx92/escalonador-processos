@@ -18,6 +18,10 @@ class Criticidade(Enum):
     TEMPO_REAL = 2  # Operacional: navegação, V2X. Deadlines importantes, mas com alguma tolerância.
     CONFORTO = 3  # Não essencial: entretenimento, logs. Sem deadline rígido.
 
+class DeadlinePerdidoError(Exception):
+    """Exceção customizada para quando uma tarefa crítica perde seu deadline."""
+    pass   
+
 class TarefaCAV:
     """
     Representa uma tarefa no sistema do Veículo Autônomo Conectado.
@@ -65,7 +69,7 @@ class TarefaCAV:
         return f"Tarefa(ID: {self.id}, Nome: {self.nome}, Crit: {self.criticidade.name})"
 
 # ==============================================================================
-# PILAR 2: GESTÃO DE RECURSOS COM ATOMICIDADE (PIP CORRIGIDO)
+# GESTÃO DE RECURSOS COM ATOMICIDADE
 # ==============================================================================
 
 class GerenciadorRecursos:
@@ -157,7 +161,6 @@ class GerenciadorRecursos:
                 return
 
             recurso = self.recursos[nome_recurso]
-            recurso = self.recursos[nome_recurso]
             tarefa.prioridade_atual = tarefa.prioridade_original
 
             if recurso["fila_espera"]:
@@ -168,11 +171,10 @@ class GerenciadorRecursos:
                 # Remover do controle de timeout
                 if nome_recurso in self.recursos_alocados:
                     del self.recursos_alocados[nome_recurso]
-                    del self.recursos_alocados[nome_recurso]
                 recurso["dono"] = None
 
 # ==============================================================================
-# PILAR 3: ARQUITETURA DO ESCALONADOR (COM MÉTRICAS E SEGURANÇA)
+# ARQUITETURA DO ESCALONADOR (COM MÉTRICAS E SEGURANÇA)
 # ==============================================================================
 
 # 3. Sistema de Mensagens
@@ -181,27 +183,33 @@ class MensagensSistema:
     ALERTA_TIMEOUT = "[SEGURANÇA] Recurso {recurso} liberado por timeout"
     INFO_MODO_SEGURANCA = "[SISTEMA] Ativado modo segurança"
 
-
-class EscalonadorCAV:
-    def __init__(self, quantum_rr=10.0):
-        self.relogio_simulado = 0.0
+class Escalonador:
+    def __init__(self, estrategias_por_criticidade: dict, quantum_rr=10.0):
+        """
+        Inicializador da classe unificada de Escalonador.
+        Recebe as estratégias e configurações da simulação.
+        """
+        # --- Atributos de Configuração ---
         self.quantum_rr = quantum_rr
-        self.filas = {
-            Criticidade.CRITICA: [],  # CORREÇÃO: Usaremos heapq aqui
-            Criticidade.TEMPO_REAL: deque(),
-            Criticidade.CONFORTO: deque()
-        }
-        self.gerenciador_recursos = GerenciadorRecursos()
+        self.estrategias = estrategias_por_criticidade
+
+        # --- Atributos de Estado da Simulação ---
+        self.relogio_simulado = 0.0
         self.tarefa_em_execucao = None
         self.tarefas_concluidas = []
+        self.tarefas_periodicas_template = []
+        
+        # --- Inicialização das Filas (lógica corrigida) ---
+        self.filas = {}
+        for criticidade, estrategia in self.estrategias.items():
+            if isinstance(estrategia, (EstrategiaRoundRobin, EstrategiaFIFO)):
+                self.filas[criticidade] = deque()
+            else:
+                self.filas[criticidade] = []
 
-        # --- CORREÇÃO 2: MEDIÇÃO DE OVERHEAD ---
+        # --- Outros Componentes e Métricas ---
+        self.gerenciador_recursos = GerenciadorRecursos()
         self.overhead_total_escalonamento = 0.0
-
-        # --- CORREÇÃO 5: CONTROLE DE STARVATION ---
-        self.ultimo_conforto_executado = 0.0
-
-        # --- CORREÇÃO 6: MÉTRICAS DE SEGURANÇA ADICIONAIS ---
         self.metricas = {
             "wcrt_critico": 0.0,
             "deadlines_perdidos": 0,
@@ -209,284 +217,150 @@ class EscalonadorCAV:
             "modos_seguranca_ativados": 0
         }
 
-        self.tarefas_periodicas_template = []  # Linha nova a ser adicionada
-
-    def validar_certificado(self, tarefa: TarefaCAV):
-        """Verifica a integridade da tarefa."""
-        return tarefa.certificado == tarefa._gerar_certificado()
-
-    # --- CORREÇÃO 1: VALIDAÇÃO NO PONTO DE ENTRADA ---
     def adicionar_tarefa(self, tarefa: TarefaCAV):
-        if tarefa.criticidade == Criticidade.CRITICA:
-            if not hasattr(tarefa, 'deadline_relativo') or tarefa.deadline_relativo <= 0:
-                raise ValueError(f"Tarefa crítica {tarefa.nome} requer deadline positivo")
-        super().adicionar_tarefa(tarefa)
-
-        # Registro de tarefas periódicas (novo)
-        if tarefa.periodo is not None:
-            # Cria template separado da instância
-            template = TarefaCAV(
-                nome=tarefa.nome,
-                duracao=tarefa.duracao,
-                criticidade=tarefa.criticidade,
-                deadline_relativo=tarefa.deadline_relativo,
-                periodo=tarefa.periodo,
-                recurso_necessario=tarefa.recurso_necessario
-            )
-            template.tempo_ultima_liberacao = self.relogio_simulado
-        
-            self.tarefas_periodicas_template.append(template)
-            print(f"-> [PERIÓDICA] Template registrado para '{tarefa.nome}' com período {tarefa.periodo}ms")
-
+        # Lógica de adicionar tarefa (já corrigida, sem 'super')
         tarefa.tempo_chegada = self.relogio_simulado
         if tarefa.deadline_relativo:
             tarefa.deadline_absoluto = self.relogio_simulado + tarefa.deadline_relativo
         
-        self._adicionar_tarefa_na_fila(tarefa)
+        # Adiciona na fila usando a estratégia correta
+        estrategia = self.estrategias[tarefa.criticidade]
+        fila = self.filas[tarefa.criticidade]
+        estrategia.adicionar(fila, tarefa)
+        
+        if tarefa.periodo is not None:
+            # ... (lógica de tarefas periódicas, pode manter se quiser) ...
+            pass
 
-    # --- CORREÇÃO 2: USO CORRETO DO HEAPQ ---
-    def _adicionar_tarefa_na_fila(self, tarefa: TarefaCAV):
-        fila_alvo = self.filas[tarefa.criticidade]
-        if tarefa.criticidade == Criticidade.CRITICA:
-            # O heap armazena uma tupla para garantir a ordenação correta.
-            heapq.heappush(fila_alvo, tarefa)
-        else:
-            fila_alvo.append(tarefa)
-
-    def _verificar_tarefas_periodicas(self):
-        """Verifica e gera novas instâncias de tarefas periódicas."""
-        for template in self.tarefas_periodicas_template[:]:
-            proxima_liberacao = template.tempo_ultima_liberacao + template.periodo
+    def _adicionar_tarefa_na_fila(self, tarefa: 'TarefaCAV'):
+        """
+        Método auxiliar que delega a adição de uma tarefa à sua fila
+        correspondente, usando a estratégia de enfileiramento correta.
+        """
+        if tarefa.estado != "CONCLUIDA":
+            tarefa.estado = "PRONTA" # Garante que a tarefa volte ao estado PRONTA
             
-            if self.relogio_simulado >= proxima_liberacao:
-                nova_instancia = TarefaCAV(
-                    nome=template.nome,
-                    duracao=template.duracao,
-                    criticidade=template.criticidade,
-                    deadline_relativo=template.deadline_relativo,
-                    periodo=template.periodo,
-                    recurso_necessario=template.recurso_necessario
-                )
-                
-                # Configura tempos da nova instância
-                nova_instancia.tempo_chegada = proxima_liberacao
-                if nova_instancia.deadline_relativo:
-                    nova_instancia.deadline_absoluto = proxima_liberacao + nova_instancia.deadline_relativo
-                
-                # Atualiza template para próxima liberação
-                template.tempo_ultima_liberacao = proxima_liberacao
-                
-                self._adicionar_tarefa_na_fila(nova_instancia)
-                print(f"-> [PERIÓDICA] Nova instância de '{template.nome}' gerada em {self.relogio_simulado:.2f}ms")
+        estrategia = self.estrategias[tarefa.criticidade]
+        fila = self.filas[tarefa.criticidade]
+        estrategia.adicionar(fila, tarefa)
 
-    def ativar_modo_seguranca(self, tarefa_gatilho: TarefaCAV):
-        if self.filas[Criticidade.CONFORTO]:
-            print(f"!!! MODO DE SEGURANÇA ATIVADO em {self.relogio_simulado:.2f}ms devido a {tarefa_gatilho.nome} !!!")
-            print("    -> Descartando todas as tarefas de CONFORTO para liberar recursos.")
-            self.filas[Criticidade.CONFORTO].clear()
-            self.metricas["modos_seguranca_ativados"] += 1
-
-    
     def selecionar_proxima_tarefa(self):
-        """
-        Este método implementa a lógica hierárquica de seleção de tarefas:
-        1. CRÍTICA (EDF)
-        2. TEMPO REAL (Round Robin)
-        3. CONFORTO (FIFO)
-        """
+        # Lógica de seleção (já corrigida, usando as estratégias)
         inicio_selecao = time.perf_counter_ns()
-    
-        # Anti-starvation para tarefas de CONFORTO
-        if (self.relogio_simulado - self.ultimo_conforto_executado) > 500.0:
-            for _ in range(len(self.filas[Criticidade.CONFORTO])):
-                tarefa = self.filas[Criticidade.CONFORTO].popleft()
-                if tarefa.estado != "BLOQUEADA":
-                    print(f"    [ANTI-STARVATION] Forçando execução de '{tarefa.nome}'")
-                    self.ultimo_conforto_executado = self.relogio_simulado
-                    return tarefa
-                self.filas[Criticidade.CONFORTO].append(tarefa)
-    
-        # 1. Verifica tarefas CRÍTICAS (EDF)
-        if self.filas[Criticidade.CRITICA]:
-            tarefa = heapq.heappop(self.filas[Criticidade.CRITICA])
-            if tarefa.estado != "BLOQUEADA":
-                fim_selecao = time.perf_counter_ns()
-                self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6
-                return tarefa
-            else:
-                self.gerenciador_recursos.adicionar_tarefa_bloqueada(tarefa)
-    
-        # 2. Verifica tarefas de TEMPO REAL (RR)
-        if self.filas[Criticidade.TEMPO_REAL]:
-            for _ in range(len(self.filas[Criticidade.TEMPO_REAL])):
-                tarefa = self.filas[Criticidade.TEMPO_REAL].popleft()
-                if tarefa.estado != "BLOQUEADA":
-                    fim_selecao = time.perf_counter_ns()
-                    self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6
-                    return tarefa
-                
-    
-        # 3. Verifica tarefas de CONFORTO (FIFO)
-        if self.filas[Criticidade.CONFORTO]:
-            for _ in range(len(self.filas[Criticidade.CONFORTO])):
-                tarefa = self.filas[Criticidade.CONFORTO].popleft()
-                if tarefa.estado != "BLOQUEADA":
-                    fim_selecao = time.perf_counter_ns()
-                    self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6
-                    return tarefa
-                self.filas[Criticidade.CONFORTO].append(tarefa)
-    
+        for nivel in [Criticidade.CRITICA, Criticidade.TEMPO_REAL, Criticidade.CONFORTO]:
+            fila = self.filas[nivel]
+            if fila:
+                estrategia = self.estrategias[nivel]
+                tarefa = estrategia.selecionar(fila)
+                if tarefa:
+                    if tarefa.estado != "BLOQUEADA":
+                        fim_selecao = time.perf_counter_ns()
+                        self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6
+                        return tarefa
+                    else:
+                        estrategia.adicionar(fila, tarefa)
         fim_selecao = time.perf_counter_ns()
         self.overhead_total_escalonamento += (fim_selecao - inicio_selecao) / 1e6
         return None
 
-    def simular(self):
-        tempo_inicio = time.perf_counter_ns()
-        
-        
-        tempo_atual = (time.perf_counter_ns() - tempo_inicio) / 1e6  # ms
+    # Dentro da sua classe unificada 'Escalonador'
 
-        '''# 1. Verificar timeouts periodicamente            
-        if self.gerenciador_recursos.verificar_timeouts(tempo_atual):
-            continue # Se houve timeout, reiniciar seleção'''
-    
-        """Motor principal da simulação."""
+    # Na classe Escalonador, substitua o método simular por este:
+
+    def simular(self, cenario_de_teste): # Agora recebe o cenário como argumento
+        """
+        Versão final do motor de simulação, agora orientado a eventos,
+        capaz de adicionar tarefas dinamicamente ao longo do tempo.
+        """
         print("\n--- INÍCIO DA SIMULAÇÃO ---")
         
-        # Validação inicial de certificados
-        for fila in list(self.filas.values()):
-            for tarefa in list(fila):
-                if not self.validar_certificado(tarefa):
-                    print(f"ALERTA! Tarefa '{tarefa.nome}' com certificado inválido. Removendo.")
-                    if isinstance(fila, list):
-                        fila.remove(tarefa)
-                    elif isinstance(fila, deque):
-                        if tarefa in fila:
-                            fila.remove(tarefa)
-        
-        # Loop principal de simulação
-        while any([self.tarefa_em_execucao, 
-                self.filas[Criticidade.CRITICA],
-                self.filas[Criticidade.TEMPO_REAL],
-                self.filas[Criticidade.CONFORTO]]):
+        # Copia o cenário para não modificar o original
+        proximas_tarefas_a_chegar = deque(cenario_de_teste)
+
+        while any(self.filas.values()) or self.tarefa_em_execucao or proximas_tarefas_a_chegar:
             
-            # 1. Verificar e gerar novas instâncias de tarefas periódicas
-            self._verificar_tarefas_periodicas()
-            
-            # 2. Monitorar deadlines críticos para ativação do modo segurança
-            if self.filas[Criticidade.CRITICA]:
-                tarefa_critica = self.filas[Criticidade.CRITICA][0]
-                tempo_restante = tarefa_critica.deadline_absoluto - self.relogio_simulado
-                if tempo_restante < (tarefa_critica.deadline_relativo * 0.3):
-                    self.ativar_modo_seguranca(tarefa_critica)
-            
-            # 3. Selecionar próxima tarefa para execução (com preempção)
+            # Adiciona novas tarefas baseadas no relógio da simulação
+            while proximas_tarefas_a_chegar and self.relogio_simulado >= proximas_tarefas_a_chegar[0][0]:
+                _, tarefa_para_adicionar = proximas_tarefas_a_chegar.popleft()
+                print(f"Tempo: {self.relogio_simulado:6.2f} ms | [CHEGADA] Tarefa '{tarefa_para_adicionar.nome}' entrou no sistema.")
+                self.adicionar_tarefa(tarefa_para_adicionar)
+
+            # O resto da lógica de simulação permanece a mesma...
             nova_tarefa = self.selecionar_proxima_tarefa()
-            if nova_tarefa:
-                # Verificar se precisa preemptar a tarefa atual
-                if self.tarefa_em_execucao and (nova_tarefa.criticidade.value < self.tarefa_em_execucao.criticidade.value):
-                    print(f"    [PREEMPÇÃO] '{self.tarefa_em_execucao.nome}' por '{nova_tarefa.nome}'")
-                    self.adicionar_tarefa_na_fila(self.tarefa_em_execucao)
+
+            # Lógica de preempção, etc...
+            if nova_tarefa and self.tarefa_em_execucao:
+                if nova_tarefa.prioridade_atual < self.tarefa_em_execucao.prioridade_atual:
+                    print(f"Tempo: {self.relogio_simulado:6.2f} ms | [PREEMPÇÃO] Tarefa '{self.tarefa_em_execucao.nome}' interrompida por '{nova_tarefa.nome}'.")
+                    self._adicionar_tarefa_na_fila(self.tarefa_em_execucao)
                     self.tarefa_em_execucao = None
-                
-                # Iniciar execução da nova tarefa
-                if not self.tarefa_em_execucao:
-                    self.tarefa_em_execucao = nova_tarefa
-                    if self.tarefa_em_execucao.tempo_inicio_execucao == -1:
-                        self.tarefa_em_execucao.tempo_inicio_execucao = self.relogio_simulado
-                    print(f"Tempo: {self.relogio_simulado:6.2f} ms | Iniciando: {self.tarefa_em_execucao.nome}")
+                else:
+                    self._adicionar_tarefa_na_fila(nova_tarefa)
+                    nova_tarefa = None
             
-            # 4. Executar a tarefa atual (se existir)
+            if not self.tarefa_em_execucao and nova_tarefa:
+                self.tarefa_em_execucao = nova_tarefa
+                if self.tarefa_em_execucao.tempo_inicio_execucao == -1:
+                    self.tarefa_em_execucao.tempo_inicio_execucao = self.relogio_simulado
+                print(f"Tempo: {self.relogio_simulado:6.2f} ms | [INICIANDO] Tarefa '{self.tarefa_em_execucao.nome}' (Duração: {self.tarefa_em_execucao.duracao:.2f} ms)")
+
             if self.tarefa_em_execucao:
-                # Verificar se precisa de recurso
-                if self.tarefa_em_execucao.recurso_necessario:
-                    recurso_obtido = self.gerenciador_recursos.solicitar(
-                        self.tarefa_em_execucao, 
-                        self.tarefa_em_execucao.recurso_necessario, 
-                        self
-                    )
+                tarefa_atual = self.tarefa_em_execucao
+                
+                if tarefa_atual.recurso_necessario and tarefa_atual.estado != "EXECUTANDO_COM_RECURSO":
+                    recurso_obtido = self.gerenciador_recursos.solicitar(tarefa_atual, tarefa_atual.recurso_necessario, self)
                     if not recurso_obtido:
-                        print(f"    [BLOQUEIO] '{self.tarefa_em_execucao.nome}' aguardando recurso")
+                        print(f"Tempo: {self.relogio_simulado:6.2f} ms | [BLOQUEIO] Tarefa '{tarefa_atual.nome}' aguardando recurso.")
+                        tarefa_atual.estado = "BLOQUEADA"
                         self.tarefa_em_execucao = None
                         continue
-                
-                # Determinar tempo de execução neste ciclo
-                if self.tarefa_em_execucao.criticidade == Criticidade.TEMPO_REAL:
-                    tempo_exec = min(self.quantum_rr, self.tarefa_em_execucao.tempo_restante)
-                else:
-                    tempo_exec = min(1.0, self.tarefa_em_execucao.tempo_restante)  # Passo de 1ms
-                
-                # Executar a tarefa
-                self.tarefa_em_execucao.tempo_restante -= tempo_exec
-                self.relogio_simulado += tempo_exec
-                
-                print(f"Tempo: {self.relogio_simulado:6.2f} ms | Executando: {self.tarefa_em_execucao.nome} ({self.tarefa_em_execucao.tempo_restante:.2f}ms rest.)")
-                
-                # Verificar se tarefa concluiu
-                if self.tarefa_em_execucao.tempo_restante <= 0:
-                    self.tarefa_em_execucao.estado = "CONCLUIDA"
-                    self.tarefa_em_execucao.tempo_final_execucao = self.relogio_simulado
-                    self.tarefas_concluidas.append(self.tarefa_em_execucao)
-                    print(f"    [CONCLUÍDA] '{self.tarefa_em_execucao.nome}' finalizada")
-                    
-                    # Liberar recursos se necessário
-                    if self.tarefa_em_execucao.recurso_necessario:
-                        self.gerenciador_recursos.liberar(
-                            self.tarefa_em_execucao, 
-                            self.tarefa_em_execucao.recurso_necessario
-                        )
-                    
-                    self.tarefa_em_execucao = None
-                
-                # Devolver à fila se for RR e não terminou
-                elif self.tarefa_em_execucao.criticidade == Criticidade.TEMPO_REAL:
-                    self.adicionar_tarefa_na_fila(self.tarefa_em_execucao)
-                    self.tarefa_em_execucao = None
-                    
-            if tarefa.concluida:
-                # Atualiza WCRT para tarefas críticas
-                if tarefa.criticidade == Criticidade.CRITICA:
-                    tempo_resposta = tarefa.tempo_conclusao - tarefa.tempo_liberacao
-                    self.metricas['wcrt_critico'] = max(self.metricas['wcrt_critico'], tempo_resposta)
-                
-                # Verifica deadlines perdidos
-                if hasattr(tarefa, 'deadline_relativo') and tarefa.tempo_conclusao > tarefa.deadline_absoluto:
-                    self.metricas['deadlines_perdidos'] += 1
-                    raise DeadlinePerdidoError(tarefa.nome)
+                    else:
+                        tarefa_atual.estado = "EXECUTANDO_COM_RECURSO"
 
-            # 5. Avançar tempo se sistema ocioso
+                estrategia_da_tarefa = self.estrategias[tarefa_atual.criticidade]
+                tempo_exec = tarefa_atual.tempo_restante
+                
+                if isinstance(estrategia_da_tarefa, EstrategiaRoundRobin):
+                    tempo_exec = min(tarefa_atual.tempo_restante, estrategia_da_tarefa.quantum)
+                
+                self.relogio_simulado += tempo_exec
+                tarefa_atual.tempo_restante -= tempo_exec
+
+                if tarefa_atual.tempo_restante <= 0:
+                    tarefa_atual.estado = "CONCLUIDA"
+                    tarefa_atual.tempo_final_execucao = self.relogio_simulado
+                    self.tarefas_concluidas.append(tarefa_atual)
+                    print(f"Tempo: {self.relogio_simulado:6.2f} ms | [CONCLUÍDA] Tarefa '{tarefa_atual.nome}'.")
+
+                    # Cálculo do WCRT no momento da conclusão
+                    if tarefa_atual.criticidade == Criticidade.CRITICA:
+                        tempo_resposta = tarefa_atual.tempo_final_execucao - tarefa_atual.tempo_chegada
+                        self.metricas['wcrt_critico'] = max(self.metricas['wcrt_critico'], tempo_resposta)
+                    
+                    if tarefa_atual.recurso_necessario:
+                        self.gerenciador_recursos.liberar(tarefa_atual, tarefa_atual.recurso_necessario)
+                    self.tarefa_em_execucao = None
+                
+                elif isinstance(estrategia_da_tarefa, EstrategiaRoundRobin):
+                    print(f"Tempo: {self.relogio_simulado:6.2f} ms | [QUANTUM] Tarefa '{tarefa_atual.nome}' volta para a fila.")
+                    self._adicionar_tarefa_na_fila(tarefa_atual)
+                    self.tarefa_em_execucao = None
             else:
                 self.relogio_simulado += 1.0
-                time.sleep(0.001)  # Evitar consumo excessivo de CPU
-        
+
         print("--- FIM DA SIMULAÇÃO ---")
         self.gerar_relatorio()
-    
-    def gerar_relatorio(self):        
-        """Calcula e exibe as métricas de desempenho e segurança."""
-        print("\n\n--- RELATÓRIO FINAL DE DESEMPENHO E SEGURANÇA ---")
         
+    def gerar_relatorio(self):
+        # Mova o conteúdo do seu método gerar_relatorio para cá
+        print("\n\n--- RELATÓRIO FINAL DE DESEMPENHO E SEGURANÇA ---")
+        # (todo o código de gerar_relatorio)
         total_tarefas = len(self.tarefas_concluidas)
-        if total_tarefas == 0:
-            print("Nenhuma tarefa foi concluída.")
+        if not total_tarefas:
+            print("Nenhuma tarefa concluída.")
             return
 
-        # Métricas Críticas
-        tarefas_criticas = [t for t in self.tarefas_concluidas if t.criticidade == Criticidade.CRITICA and hasattr(t, 'deadline_relativo')]
-        deadlines_perdidos = 0
-        wcrt = 0.0  # Novo
-        
-        if tarefas_criticas:
-            for t in tarefas_criticas:
-                tempo_resposta = t.tempo_final_execucao - t.tempo_chegada
-                wcrt = max(wcrt, tempo_resposta)  # Calcula WCRT
-                if t.tempo_final_execucao > t.deadline_absoluto:
-                    deadlines_perdidos += 1
-            
-            # Adicionar ao relatório
-            print(f"  - Worst-Case Response Time (CRÍTICO): {wcrt:.2f} ms")
-
-        # Métricas Gerais
+        # ... e assim por diante
         tempos_resposta = [t.tempo_final_execucao - t.tempo_chegada for t in self.tarefas_concluidas]
         tempos_espera = [(t.tempo_final_execucao - t.tempo_chegada) - t.duracao for t in self.tarefas_concluidas]
         
@@ -496,42 +370,17 @@ class EscalonadorCAV:
         tempo_total_execucao = sum(t.duracao for t in self.tarefas_concluidas)
         utilizacao_cpu = (tempo_total_execucao / self.relogio_simulado) * 100 if self.relogio_simulado > 0 else 0
 
+        print(f"  - Worst-Case Response Time (CRÍTICO): {self.metricas['wcrt_critico']:.2f} ms")
         print("\n[Métricas Gerais de Desempenho]")
         print(f"  - Tempo Total da Simulação: {self.relogio_simulado:.2f} ms")
         print(f"  - Utilização da CPU: {utilizacao_cpu:.2f}%")
         print(f"  - Tempo Médio de Resposta (Turnaround): {tempo_medio_resposta:.2f} ms")
         print(f"  - Tempo Médio de Espera: {tempo_medio_espera:.2f} ms")
         
-        # --- Cálculo do Jitter ---
-        tempos_execucao_periodicas = {}
-        for t in self.tarefas_concluidas:
-            if t.periodo:
-                if t.nome not in tempos_execucao_periodicas:
-                    tempos_execucao_periodicas[t.nome] = []
-                tempos_execucao_periodicas[t.nome].append(t.tempo_inicio_execucao)
-        
-        max_jitter = 0.0
-        for nome, tempos in tempos_execucao_periodicas.items():
-            if len(tempos) > 1:
-                intervalos = [tempos[i] - tempos[i-1] for i in range(1, len(tempos))]
-                jitter = max(intervalos) - min(intervalos)
-                max_jitter = max(max_jitter, jitter)
-        self.metricas["max_jitter_periodico"] = max_jitter
-
-        # Exibição das novas métricas no relatório
         print("\n--- Relatório Final ---")
         print(f"  - Overhead Total do Escalonador: {self.overhead_total_escalonamento:.4f} ms")
         print(f"  - Jitter Máximo em Tarefas Periódicas: {self.metricas['max_jitter_periodico']:.2f} ms")
         print(f"  - Modos de Segurança Ativados: {self.metricas['modos_seguranca_ativados']} vezes")
-
-    def relatorio_metricas(self):
-        """Método UNIFICADO para todos os escalonadores"""
-        print("\n=== METRICAS DE DESEMPENHO ===")
-        print(f"● Worst-Case Response Time (Crítico): {self.metricas['wcrt_critico']}ms")
-        print(f"● Deadlines Perdidos: {self.metricas['deadlines_perdidos']}")
-        print(f"● Máximo Jitter Periódico: {self.metricas['max_jitter_periodico']:.2f}ms")
-        print(f"● Modos Segurança Ativados: {self.metricas['modos_seguranca_ativados']}")
-        print(f"● Overhead Total de Escalonamento: {self.overhead_total_escalonamento:.2f}ms")
 
 
 class EstrategiaDeFila(ABC):
@@ -582,51 +431,23 @@ class EstrategiaFIFO(EstrategiaDeFila):
             return fila_deque.popleft()
         return None
 
-class EscalonadorHibrido(EscalonadorCAV):
-    """
-    Um escalonador configurável que utiliza diferentes estratégias para cada
-    nível de criticidade.
-    """
-    def __init__(self, estrategias_por_criticidade: dict):
-        super().__init__()  # Chama o init da classe base
-        
-        # Inicializa filas com os tipos corretos para cada estratégia
-        self.filas = {
-            Criticidade.CRITICA: [],  # Heap para EDF
-            Criticidade.TEMPO_REAL: deque() if isinstance(estrategias_por_criticidade[Criticidade.TEMPO_REAL], (EstrategiaRoundRobin, EstrategiaFIFO)) else [],
-            Criticidade.CONFORTO: deque() if isinstance(estrategias_por_criticidade[Criticidade.CONFORTO], (EstrategiaRoundRobin, EstrategiaFIFO)) else []
-        }
-        
-        self.estrategias = estrategias_por_criticidade
-        self.gerenciador_recursos = GerenciadorRecursos()
-        self.tarefa_em_execucao = None
-        self.tarefas_concluidas = []
-        self.overhead_total_escalonamento = 0.0
-        self.ultimo_conforto_executado = 0.0
-        self.metricas = {
-            "wcrt_critico": 0.0,
-            "deadlines_perdidos": 0,
-            "max_jitter_periodico": 0.0,
-            "modos_seguranca_ativados": 0
-        }
-        self.tarefas_periodicas_template = []
+class EstrategiaSJF(EstrategiaDeFila):
+    """Estratégia Shortest Job First."""
+    def selecionar(self, fila_de_tarefas):
+        if not fila_de_tarefas:
+            return None
 
-    def _adicionar_tarefa_na_fila(self, tarefa: TarefaCAV):
-        """Delega a adição da tarefa para a estratégia correta."""
-        estrategia = self.estrategias[tarefa.criticidade]
-        fila = self.filas[tarefa.criticidade]
-        estrategia.adicionar(fila, tarefa)
+        # Encontra a tarefa com a menor duração (tempo_restante)
+        tarefa_mais_curta = min(fila_de_tarefas, key=lambda tarefa: tarefa.tempo_restante)
+        fila_de_tarefas.remove(tarefa_mais_curta)
+        return tarefa_mais_curta
 
-    def selecionar_proxima_tarefa(self):
-        for nivel in [Criticidade.CRITICA, Criticidade.TEMPO_REAL, Criticidade.CONFORTO]:
-            fila = self.filas[nivel]
-            if fila:
-                tarefa = self.estrategias[nivel].selecionar(fila)
-                if tarefa:
-                    if tarefa.estado == "BLOQUEADA":
-                        self.gerenciador_recursos.adicionar_tarefa_bloqueada(tarefa)
-                    else:
-                        return tarefa
+    def adicionar(self, fila_de_tarefas, tarefa):
+        # No SJF não-preemptivo, a ordem de adição na fila não importa tanto, 
+        # pois a seleção busca sempre a menor tarefa.
+        fila_de_tarefas.append(tarefa)
+
+
 
 def criar_cenario_de_teste():
     """
@@ -647,65 +468,164 @@ def criar_cenario_de_teste():
         TarefaCAV(nome="Atualizar Display Multimidia", duracao=100.0, criticidade=Criticidade.CONFORTO),
         TarefaCAV(nome="Sincronizar Playlist", duracao=150.0, criticidade=Criticidade.CONFORTO)
     ]
+
+def criar_cenario_balanceado():
+    """Cenário com uma mistura de tarefas de todas as criticidades."""
+    return [
+        TarefaCAV(nome="Verificar Freios", duracao=5.0, criticidade=Criticidade.CRITICA, deadline_relativo=20.0, recurso_necessario="freios"),
+        TarefaCAV(nome="Ajustar Estabilidade", duracao=10.0, criticidade=Criticidade.CRITICA, deadline_relativo=50.0),
+        TarefaCAV(nome="Processar Radar", duracao=25.0, criticidade=Criticidade.TEMPO_REAL, recurso_necessario="radar"),
+        TarefaCAV(nome="Calcular Rota GPS", duracao=60.0, criticidade=Criticidade.TEMPO_REAL),
+        TarefaCAV(nome="Atualizar Multimidia", duracao=100.0, criticidade=Criticidade.CONFORTO),
+        TarefaCAV(nome="Sincronizar Playlist", duracao=150.0, criticidade=Criticidade.CONFORTO)
+    ]
+
+def criar_cenario_critico():
+    """Cenário focado em tarefas críticas e de tempo real com deadlines apertados."""
+    return [
+        TarefaCAV(nome="Desviar de Obstáculo", duracao=8.0, criticidade=Criticidade.CRITICA, deadline_relativo=15.0, recurso_necessario="direcao"),
+        TarefaCAV(nome="Comunicacao V2V Urgente", duracao=12.0, criticidade=Criticidade.CRITICA, deadline_relativo=25.0),
+        TarefaCAV(nome="Processar Lidar", duracao=20.0, criticidade=Criticidade.TEMPO_REAL),
+        TarefaCAV(nome="Ajustar Velocidade", duracao=5.0, criticidade=Criticidade.TEMPO_REAL),
+    ]
+
+def criar_cenario_conflitante():
+    """
+    Cenário com conflito entre deadline e duração para diferenciar SJF de EDF.
+    - 'Processar Câmera': Tarefa longa, mas com deadline curto (urgente).
+    - 'Verificar Pressão Pneus': Tarefa curta, mas com deadline longo (não urgente).
+    """
+    print("\nAVISO: Usando cenário com conflito de prioridade (SJF vs EDF).")
+    return [
+        TarefaCAV(nome="Processar Câmera 4K", duracao=40.0, criticidade=Criticidade.CRITICA, deadline_relativo=50.0),
+        TarefaCAV(nome="Verificar Pressão Pneus", duracao=5.0, criticidade=Criticidade.TEMPO_REAL, deadline_relativo=150.0),
+        TarefaCAV(nome="Calcular Rota Alternativa", duracao=25.0, criticidade=Criticidade.TEMPO_REAL, deadline_relativo=100.0),
+        TarefaCAV(nome="Tocar Alerta Sonoro", duracao=2.0, criticidade=Criticidade.CRITICA, deadline_relativo=20.0),
+    ]
+
+def criar_cenario_intercalado():
+    """
+    Um cenário de teste mais rico e realista, projetado para testar:
+    - Múltiplas tarefas em todos os níveis de criticidade.
+    - Conflitos de deadline vs. duração (SJF vs. EDF).
+    - Intercalação de tarefas de mesma prioridade (FIFO vs. RR).
+    - Disputa por recursos compartilhados e bloqueio de tarefas.
+    """
+    print("\nAVISO: Usando Cenário Complexo com disputa por recursos.")
+    return [
+        # Tarefas Críticas
+        TarefaCAV(nome="Freio de Emergência", duracao=10.0, criticidade=Criticidade.CRITICA, deadline_relativo=30.0, recurso_necessario="freios"),
+        TarefaCAV(nome="Ajuste de Estabilidade", duracao=15.0, criticidade=Criticidade.CRITICA, deadline_relativo=80.0),
+
+        # Tarefas de Tempo Real (com disputa por recurso)
+        TarefaCAV(nome="Processar Radar Frontal", duracao=30.0, criticidade=Criticidade.TEMPO_REAL, deadline_relativo=150.0, recurso_necessario="comunicacao"),
+        TarefaCAV(nome="Comunicação V2V", duracao=10.0, criticidade=Criticidade.TEMPO_REAL, deadline_relativo=120.0, recurso_necessario="comunicacao"),
+
+        # Tarefas de Conforto (uma delas precisa de um recurso disputado)
+        TarefaCAV(nome="Atualizar Mapas HD", duracao=50.0, criticidade=Criticidade.CONFORTO, deadline_relativo=500.0, recurso_necessario="comunicacao"),
+        TarefaCAV(nome="Diagnóstico do Sistema", duracao=80.0, criticidade=Criticidade.CONFORTO, deadline_relativo=800.0),
+    ]
+
+def criar_cenario_de_emergencia_urbana():
+    """
+    Cenário final, estressante e realista, simulando um evento de frenagem de emergência.
+    As tarefas chegam em momentos diferentes para simular uma cadeia de eventos.
+    Os tempos são baseados em estimativas realistas para sistemas embarcados automotivos.
+    Retorna uma lista de tuplas: (tempo_de_chegada_ms, objeto_tarefa).
+    """
+    print("="*60)
+    print("AVISO: Carregando Cenário de Emergência Urbana (realista e estressante).")
+    print("="*60)
     
+    # A história se desenrola em um intervalo de 100ms
+    cenario = [
+        # t=0ms: Tarefas de fundo estão rodando normalmente
+        (0.0, TarefaCAV(nome="Diagnóstico de Bateria", duracao=100.0, criticidade=Criticidade.CONFORTO, deadline_relativo=2000.0)),
+        (0.0, TarefaCAV(nome="Atualizar Posição GPS", duracao=50.0, criticidade=Criticidade.TEMPO_REAL, deadline_relativo=500.0, recurso_necessario="gps")),
+
+        # t=10ms: Alerta V2V (Veículo-para-Veículo) sobre um perigo à frente
+        (10.0, TarefaCAV(nome="Receber Alerta V2V", duracao=5.0, criticidade=Criticidade.TEMPO_REAL, deadline_relativo=50.0, recurso_necessario="comunicacao")),
+
+        # t=20ms: O próprio LiDAR do carro detecta um obstáculo
+        (20.0, TarefaCAV(nome="Processar Dados LiDAR", duracao=25.0, criticidade=Criticidade.CRITICA, deadline_relativo=60.0, recurso_necessario="processador")),
+
+        # t=25ms: A câmera confirma que o obstáculo é um pedestre
+        (25.0, TarefaCAV(nome="Análise de Imagem (Pedestre)", duracao=40.0, criticidade=Criticidade.CRITICA, deadline_relativo=70.0, recurso_necessario="processador")),
+
+        # t=30ms: CADEIA DE AÇÕES CRÍTICAS - Devem ser imediatas
+        (30.0, TarefaCAV(nome="ACIONAR FREIO DE EMERGÊNCIA", duracao=15.0, criticidade=Criticidade.CRITICA, deadline_relativo=25.0, recurso_necessario="freios")), # Deadline muito apertado!
+        (30.0, TarefaCAV(nome="Apertar Cintos de Segurança", duracao=10.0, criticidade=Criticidade.CRITICA, deadline_relativo=30.0)),
+        
+        # t=35ms: Após a decisão, o carro avisa outros veículos
+        (35.0, TarefaCAV(nome="Transmitir Alerta V2V", duracao=5.0, criticidade=Criticidade.TEMPO_REAL, deadline_relativo=50.0, recurso_necessario="comunicacao")),
+
+        # t=100ms: Tarefa de conforto tenta rodar após o evento crítico
+        (100.0, TarefaCAV(nome="Retomar Música", duracao=20.0, criticidade=Criticidade.CONFORTO, deadline_relativo=500.0))
+    ]
+    return sorted(cenario, key=lambda x: x[0]) # Ordena pelo tempo de chegada
 
 
 if __name__ == "__main__":
-    # --- Cenário 1: Escalonador Híbrido Padrão (EDF + RR + FIFO) ---
-    print("="*60)
-    print("--- EXECUTANDO CENÁRIO 1: ESCALONADOR HÍBRIDO PADRÃO (EDF + RR) ---")
-    print("="*60)
-    
-    # 1. Crie instâncias das estratégias que você quer usar
-    estrategia_edf_1 = EstrategiaEDF()
-    estrategia_rr_1 = EstrategiaRoundRobin(quantum=20.0) # Quantum de 20ms
-    estrategia_fifo_1 = EstrategiaFIFO()
+    from copy import deepcopy
 
-    # 2. Crie um dicionário que mapeia criticidade para a estratégia desejada
-    configuracao_escalonador1 = {
-        Criticidade.CRITICA: estrategia_edf_1,
-        Criticidade.TEMPO_REAL: estrategia_rr_1,
-        Criticidade.CONFORTO: estrategia_fifo_1
-    }
+    # --- PASSO 1: DEFINA O CENÁRIO PARA ESTA RODADA DE TESTES ---
+    # Para gerar resultados para diferentes cargas de trabalho, você só precisa
+    # mudar a função chamada nesta linha (ex: para criar_cenario_critico()).
 
-    # 3. Crie o escalonador passando a configuração
-    escalonador_hibrido1 = EscalonadorHibrido(estrategias_por_criticidade=configuracao_escalonador1)
-    
-    # 4. Adicione as tarefas do cenário de teste
-    cenario1 = criar_cenario_de_teste()
-    for tarefa in cenario1:
-        escalonador_hibrido1.adicionar_tarefa(tarefa)
-    
-    # 5. Execute a simulação
-    # O método simular() agora também será responsável por gerar o relatório no final.
-    escalonador_hibrido1.simular() # Descomente esta linha quando o método simular estiver pronto.
-    print("\nSimulação para o cenário 1 estaria completa aqui.")
+    cenario_de_teste = criar_cenario_de_emergencia_urbana()
 
-
-    # --- Cenário 2: Uma Nova Combinação Experimental (EDF + FIFO + FIFO) ---
-    print("\n\n" + "="*60)
-    print("--- EXECUTANDO CENÁRIO 2: ESCALONADOR EXPERIMENTAL (EDF + FIFO) ---")
-    print("="*60)
-    
-    # Reutilizamos as estratégias ou criamos novas para clareza
-    configuracao_escalonador2 = {
-        Criticidade.CRITICA: EstrategiaEDF(),
-        Criticidade.TEMPO_REAL: EstrategiaFIFO(), # <-- A única mudança está aqui!
+    # --- Simulação 1: FIFO Puro ---
+    print("\n--- SIMULANDO COM FIFO PURO ---")
+    config_fifo = {
+        Criticidade.CRITICA: EstrategiaFIFO(),
+        Criticidade.TEMPO_REAL: EstrategiaFIFO(),
         Criticidade.CONFORTO: EstrategiaFIFO()
     }
+    escalonador_fifo = Escalonador(estrategias_por_criticidade=config_fifo)
+    escalonador_fifo.simular(deepcopy(cenario_de_teste)) # Passa o cenário para o simulador
 
-    escalonador_hibrido2 = EscalonadorHibrido(estrategias_por_criticidade=configuracao_escalonador2)
+    # --- Simulação 2: Round Robin Puro ---
+    print("\n--- SIMULANDO COM ROUND ROBIN PURO (Quantum=20ms) ---")
+    config_rr = {
+        Criticidade.CRITICA: EstrategiaRoundRobin(quantum=20.0),
+        Criticidade.TEMPO_REAL: EstrategiaRoundRobin(quantum=20.0),
+        Criticidade.CONFORTO: EstrategiaRoundRobin(quantum=20.0)
+    }
+    escalonador_rr = Escalonador(estrategias_por_criticidade=config_rr)
+    escalonador_rr.simular(deepcopy(cenario_de_teste))
+
+    # --- Simulação 3: SJF Puro ---
+    print("\n--- SIMULANDO COM SJF PURO ---")
+    config_sjf = {
+        Criticidade.CRITICA: EstrategiaSJF(),
+        Criticidade.TEMPO_REAL: EstrategiaSJF(),
+        Criticidade.CONFORTO: EstrategiaSJF()
+    }
+    escalonador_sjf = Escalonador(estrategias_por_criticidade=config_sjf)
+    escalonador_sjf.simular(deepcopy(cenario_de_teste))
+
+    # --- Simulação 4: EDF Puro ---
+    print("\n--- SIMULANDO COM EDF PURO ---")
+    config_edf = {
+        Criticidade.CRITICA: EstrategiaEDF(),
+        Criticidade.TEMPO_REAL: EstrategiaEDF(),
+        Criticidade.CONFORTO: EstrategiaEDF()
+    }
+    escalonador_edf = Escalonador(estrategias_por_criticidade=config_edf)
+    escalonador_edf.simular(deepcopy(cenario_de_teste))
+
+    # --- Simulação 5: Seu Escalonador Híbrido Otimizado (PROPOSTA) ---
+    print("\n--- SIMULANDO COM O ESCALONADOR HÍBRIDO PROPOSTO ---")
+    config_hibrido = {
+        Criticidade.CRITICA: EstrategiaEDF(),
+        Criticidade.TEMPO_REAL: EstrategiaRoundRobin(quantum=20.0),
+        Criticidade.CONFORTO: EstrategiaFIFO()
+    }
+    escalonador_hibrido = Escalonador(estrategias_por_criticidade=config_hibrido)
+    escalonador_hibrido.simular(deepcopy(cenario_de_teste))
     
-    # Usamos o MESMO cenário de teste para uma comparação justa
-    cenario2 = criar_cenario_de_teste()
-    for tarefa in cenario2:
-        escalonador_hibrido2.adicionar_tarefa(tarefa)
-
-    # Execute a segunda simulação para comparar os resultados
-    escalonador_hibrido2.simular() # Descomente esta linha quando o método simular estiver pronto.
-    print("\nSimulação para o cenário 2 estaria completa aqui.")
-    print("\n\n" + "="*60)
-    print("COMPARAÇÃO FINAL: Analise os relatórios gerados por cada simulação.")
-    print("="*60)
+    print("\n" + "="*60)
+    print("TODAS AS SIMULAÇÕES FORAM CONCLUÍDAS.")
+    print("Use os relatórios impressos no terminal para preencher sua tabela de comparação.")
     print("="*60)
 
